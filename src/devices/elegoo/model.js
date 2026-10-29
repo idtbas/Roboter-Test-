@@ -250,6 +250,7 @@ export function buildMarsModel(M) {
   const ctext = textPlane('ELEGOO', { w: 70, h: 11, color: '#ffffff', font: '800 80px Inter, Arial', px: 512 });
   ctext.position.set(0, ch - 40, cd / 2 + 1.8);
   cover.add(ctext);
+  mergeStatic(cover);
   cover.position.set(0, EGEO.BASE_H + 1, 0);
   root.add(cover);
   H.cover = cover;

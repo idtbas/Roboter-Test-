@@ -219,6 +219,7 @@ export function buildPrusaModel(M) {
   }
   knobBody.add(cyl(10, 1, M.galaxyBlack, { y: 15.2 }, 32));
   knobBody.add(box(1.5, 1.2, 7, M.plasticWhite, { y: 15.4, z: -6 }));
+  mergeStatic(knobBody);
   knob.add(knobBody);
   knob.userData.keep = true;
   lcd.add(knob);
@@ -252,6 +253,7 @@ export function buildPrusaModel(M) {
   stick.position.set(88.4, -14, -2);
   H.usbStick = stick;
   H.lcd = lcd;
+  mergeStatic(lcd);
   lcd.userData.keep = true;
   frame.add(lcd);
 

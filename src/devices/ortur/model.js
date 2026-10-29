@@ -134,6 +134,7 @@ export function buildOrturModel(M) {
   ctrl.add(es);
   H.estop = es;
   H.estopMush = mush;
+  mergeStatic(ctrl);
 
   // ======================= Honeycomb bed ================================
   const hc = honeycombTextures();
@@ -361,6 +362,10 @@ export function buildLaptop(M) {
   g.add(lid);
   // USB-A port on the left side
   g.add(box(1, 5, 12, M.plasticBlack, { x: -W / 2 - 0.3, y: 7, z: -20 }));
+  keys.userData.keep = true;
+  mergeStatic(lid);
+  lid.userData.keep = true;
+  mergeStatic(g);
   return { group: g, screen, screenMat, lid };
 }
 

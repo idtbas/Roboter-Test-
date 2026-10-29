@@ -292,7 +292,10 @@ export function axialFan(M, size = 40, depth = 10, frameMat = M.plasticBlack, bl
     piv.add(blade);
     rotor.add(piv);
   }
+  mergeStatic(rotor);
+  rotor.userData.keep = true;
   g.add(rotor);
+  mergeStatic(g);
   return { group: g, rotor };
 }
 
