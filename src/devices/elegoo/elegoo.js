@@ -1,11 +1,12 @@
 import * as THREE from 'three';
-import { BaseDevice, h } from '../base.js';
+import { BaseDevice } from '../base.js';
 import { buildMarsModel, EGEO } from './model.js';
 import { MarsTouchUI } from './touch.js';
 import { RESINS, RESIN_SAMPLES, defaultParams, toResinPositions, sliceAt, sectionArea, drawMask, analyse, CuredPart, resinThumb } from './resin.js';
 import { MotorVoice, FanVoice } from '../../core/audio.js';
-import { rbox, cyl, box, textPlane } from '../../core/parts.js';
-import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { rbox, cyl, textPlane } from '../../core/parts.js';
+import { buildUsbStick, UsbStick } from '../../core/hand.js';
+import { guideCard } from '../../core/workshop.js';
 
 const VAT_AREA = 194 * 128; // mm²
 const VAT_MAX_ML = 500;
@@ -287,11 +288,9 @@ export class ElegooMars4 extends BaseDevice {
     this.root.updateMatrixWorld(true);
 
     this.fw = new MarsFirmware(this);
-    this.usb = { inserted: true, files: [], remove: (f) => { this.usb.files = this.usb.files.filter((x) => x !== f); this.panelDirty = true; } };
     this.touch = new MarsTouchUI(this);
-    this.resin = RESINS[0];
+    this.vatResin = RESINS[0];
     this.vatMl = 220;
-    this.bottleMl = 780;
     this.coverOn = true;
     this.vatIn = true;
     this.film = null;
@@ -315,6 +314,8 @@ export class ElegooMars4 extends BaseDevice {
     this.lcdOff();
 
     this.buildAccessories();
+    this.buildUsb();
+    this.buildGuide();
     this.applyResin();
     this.setupInteractions();
     this.setupAudio();
@@ -324,32 +325,102 @@ export class ElegooMars4 extends BaseDevice {
     this.view('touch', 'Touchscreen', [-62, 120, 330], [-62, 70, 110], { minDistance: 80 });
     this.view('vat', 'Wanne & Plattform', [210, 330, 400], [0, 200, 20]);
     this.view('back', 'Rückseite', [340, 230, -270], [80, 50, -110]);
+    this.view('bottles', 'Resin-Flaschen', [-300, 330, 430], [-300, 90, 20]);
+    this.view('station', 'Wash & Cure', [330, 260, 260], [260, 40, -40]);
+    this.view('guide', 'Kurzanleitung', [130, 230, 470], [130, 50, 215], { minDistance: 80 });
     this.updateMechanics();
+  }
+
+  // resin currently in the vat (or the last one used)
+  get resin() {
+    return this.vatResin || RESINS[0];
+  }
+
+  viewById(id) {
+    return this.cameraViews.find((v) => v.id === id);
+  }
+
+  focusViewFor(obj) {
+    const inside = (g) => {
+      let o = obj;
+      while (o) {
+        if (o === g) return true;
+        o = o.parent;
+      }
+      return false;
+    };
+    const H = this.H;
+    if (inside(H.touch) || inside(H.usbSocket) || inside(this.stickItem.object)) return this.viewById('touch');
+    if (inside(H.power)) return this.viewById('back');
+    if (this.bottles.some((b) => inside(b.group))) return this.viewById('bottles');
+    if (inside(this.station)) return this.viewById('station');
+    if (inside(this.guide)) return this.viewById('guide');
+    if (inside(H.cover) || inside(H.vat) || inside(H.zc)) return this.viewById('vat');
+    return this.viewById('overview');
+  }
+
+  // ---------------------------------------------------------------- USB
+  buildUsb() {
+    this.stick = new UsbStick('ELEGOO');
+    const hand = this.app.hand;
+    this.usbSocket = hand.addSocket({
+      anchor: this.H.usbSocket,
+      onInsert: () => (this.touch.ui.dirty = true),
+      onRemove: () => (this.touch.ui.dirty = true)
+    });
+    this.stickItem = hand.addItem({ object: buildUsbStick(this.app.M, 0x8a1c1c, 'ELEGOO'), kind: 'usb', data: this.stick, socket: this.usbSocket });
+    this.stick.listeners.add(() => (this.touch.ui.dirty = true));
+  }
+
+  // layer files on the inserted stick
+  get usb() {
+    const st = this.usbSocket.item?.data;
+    return {
+      inserted: !!st,
+      files: st ? st.files.filter((f) => f.kind === 'goo') : [],
+      remove: (f) => st && st.remove(f)
+    };
+  }
+
+  buildGuide() {
+    const card = guideCard('ELEGOO Mars 4', [
+      { lines: ['• Netzschalter hinten. Bedienung über den Touchscreen.', '• Haube anklicken = abnehmen. Resin-Flasche anklicken = 100 ml eingießen.', '• Haube wieder aufsetzen, dann Drucken → Datei → Drucken.', '• Danach: Haube ab, Plattform anklicken = Bauteil abnehmen.', '• Resin wechseln: Wanne herausnehmen, anklicken (leeren), wieder einsetzen.'] }
+    ], { w: 190, h: 132 });
+    card.position.set(130, 0, 200);
+    card.rotation.y = -0.35;
+    this.root.add(card);
+    this.guide = card;
   }
 
   // ---------------------------------------------------------------- setup
   buildAccessories() {
     const M = this.app.M;
-    // resin bottle
-    const bottle = new THREE.Group();
-    bottle.position.set(-220, 0, 60);
+    // resin bottles (one per resin type)
     const hdpe = new THREE.MeshPhysicalMaterial({ color: 0x18191b, roughness: 0.55, clearcoat: 0.2 });
-    bottle.add(cyl(45, 170, hdpe, { y: 85 }, 40));
-    bottle.add(cyl(36, 14, hdpe, { y: 177 }, 32, 45));
-    bottle.add(cyl(18, 22, new THREE.MeshPhysicalMaterial({ color: 0xe2e2e2, roughness: 0.4 }), { y: 195 }, 24));
-    const label = new THREE.Mesh(new THREE.CylinderGeometry(45.4, 45.4, 90, 40, 1, true, -1.2, 2.4), new THREE.MeshStandardMaterial({ map: this.bottleLabelTexture(), roughness: 0.6 }));
-    label.position.y = 90;
-    label.rotation.y = 0.2;
-    bottle.add(label);
-    this.labelMesh = label;
-    bottle.traverse((o) => o.isMesh && (o.castShadow = true));
-    this.root.add(bottle);
-    this.bottle = bottle;
-    // nitrile gloves box + spatula
-    const gb = rbox(120, 60, 70, 4, new THREE.MeshStandardMaterial({ color: 0x2f62b8, roughness: 0.7 }), { x: -230, y: 30, z: -110, ry: 0.3 });
+    const capMat = new THREE.MeshPhysicalMaterial({ color: 0xe2e2e2, roughness: 0.4 });
+    const spots = [[-205, 75], [-305, 75], [-405, 75], [-255, -35], [-355, -35]];
+    this.bottles = RESINS.map((resin, i) => {
+      const g = new THREE.Group();
+      g.position.set(spots[i][0], 0, spots[i][1]);
+      g.rotation.y = 0.3 - i * 0.15;
+      g.add(cyl(45, 170, hdpe, { y: 85 }, 40));
+      g.add(cyl(36, 14, hdpe, { y: 177 }, 32, 45));
+      g.add(cyl(18, 22, capMat, { y: 195 }, 24));
+      const label = new THREE.Mesh(new THREE.CylinderGeometry(45.4, 45.4, 90, 40, 1, true, -1.2, 2.4), new THREE.MeshStandardMaterial({ map: this.bottleLabelTexture(resin), roughness: 0.6 }));
+      label.position.y = 90;
+      label.rotation.y = 0.2;
+      g.add(label);
+      g.traverse((o) => o.isMesh && (o.castShadow = true));
+      this.root.add(g);
+      const b = { resin, ml: i === 0 ? 780 : 1000, group: g, home: g.position.clone(), homeRot: g.rotation.y };
+      this.app.interaction.add(g, { onClick: () => this.pourResin(b) });
+      return b;
+    });
+    // nitrile gloves box
+    const gb = rbox(120, 60, 70, 4, new THREE.MeshStandardMaterial({ color: 0x2f62b8, roughness: 0.7 }), { x: -470, y: 30, z: -120, ry: 0.3 });
     this.root.add(gb);
     const glv = textPlane('NITRIL', { w: 40, h: 10, color: '#fff', font: '800 70px Inter, Arial', px: 256 });
-    glv.position.set(-215, 40, -75);
+    glv.position.set(-455, 40, -85);
     glv.rotation.y = 0.3;
     this.root.add(glv);
     // wash & cure station (decor + target for finished parts)
@@ -365,7 +436,7 @@ export class ElegooMars4 extends BaseDevice {
     this.station = st;
   }
 
-  bottleLabelTexture() {
+  bottleLabelTexture(resin) {
     const c = document.createElement('canvas');
     c.width = 512;
     c.height = 256;
@@ -373,20 +444,20 @@ export class ElegooMars4 extends BaseDevice {
     ctx.fillStyle = '#f1f1f1';
     ctx.fillRect(0, 0, 512, 256);
     ctx.fillStyle = '#111';
-    ctx.font = '800 64px Inter, Arial';
     ctx.textAlign = 'center';
+    ctx.font = '800 64px Inter, Arial';
     ctx.fillText('ELEGOO', 256, 86);
-    ctx.font = '600 30px Inter, Arial';
-    ctx.fillText('Standard Resin 2.0', 256, 136);
-    this.labelChip = ctx;
-    ctx.fillStyle = '#7b7f85';
-    ctx.fillRect(176, 166, 160, 40);
-    ctx.font = '500 22px Inter, Arial';
+    ctx.font = '600 28px Inter, Arial';
+    ctx.fillText(resin.name.replace('ELEGOO ', '').split('–')[0].trim(), 256, 134);
+    ctx.font = '500 24px Inter, Arial';
+    ctx.fillText((resin.name.split('–')[1] || '').trim(), 256, 164);
+    ctx.fillStyle = resin.color;
+    ctx.fillRect(176, 180, 160, 30);
+    ctx.font = '500 20px Inter, Arial';
     ctx.fillStyle = '#333';
-    ctx.fillText('405 nm · 1000 g', 256, 236);
+    ctx.fillText('405 nm · 1000 g', 256, 240);
     const t = new THREE.CanvasTexture(c);
     t.colorSpace = THREE.SRGBColorSpace;
-    this.labelCanvas = c;
     return t;
   }
 
@@ -394,16 +465,6 @@ export class ElegooMars4 extends BaseDevice {
     const r = this.resin;
     this.H.resinMat.color.set(r.liquid);
     this.H.resinMat.opacity = r.opacity < 1 ? 0.75 : 0.95;
-    const ctx = this.labelCanvas.getContext('2d');
-    ctx.fillStyle = '#f1f1f1';
-    ctx.fillRect(0, 100, 512, 120);
-    ctx.fillStyle = '#111';
-    ctx.font = '600 28px Inter, Arial';
-    ctx.textAlign = 'center';
-    ctx.fillText(r.name.replace('ELEGOO ', '').split('–')[0].trim(), 256, 136);
-    ctx.fillStyle = r.color;
-    ctx.fillRect(176, 166, 160, 40);
-    this.labelMesh.material.map.needsUpdate = true;
   }
 
   async loadSamples() {
@@ -411,10 +472,9 @@ export class ElegooMars4 extends BaseDevice {
       const { positions, bbox } = toResinPositions(s.build());
       const params = defaultParams(this.resin);
       const info = analyse(positions, bbox, params);
-      this.usb.files.push({ name: s.file, title: s.title, positions, bbox, params, info, thumb: resinThumb(positions) });
+      this.stick.add({ kind: 'goo', name: s.file, title: s.title, positions, bbox, params, info, thumb: resinThumb(positions), size: info.layers * 3200 });
       await new Promise((r) => setTimeout(r, 0));
     }
-    this.panelDirty = true;
     this.touch.ui.dirty = true;
   }
 
@@ -469,7 +529,7 @@ export class ElegooMars4 extends BaseDevice {
     if (!ok) {
       if (!job.failed) {
         job.failed = !this.vatIn ? 'Keine Wanne eingesetzt' : this.vatMl <= ml + 2 ? 'Resin aufgebraucht' : 'Keine Plattform';
-        this.app.toast(`<b>${this.name}</b>: Schicht ${i + 1} konnte nicht aushärten (${job.failed}).`, 'err', 6000);
+        // a real Mars does not notice – the layer simply does not form
       }
       return;
     }
@@ -494,7 +554,6 @@ export class ElegooMars4 extends BaseDevice {
       this.film = m;
     }
     if (!fromPrint) this.vatMl -= 0.5;
-    this.app.toast('Auf der FEP-Folie ist eine ausgehärtete Schicht. Haube ab und die Wanne anklicken, um sie abzuziehen.', 'info', 6000);
   }
 
   // ---------------------------------------------------------------- print flow
@@ -516,28 +575,26 @@ export class ElegooMars4 extends BaseDevice {
     if (this.part) this.part.dispose();
     this.part = new CuredPart(this.H.partAnchor, job.file.positions, this.resin);
     this.part.setHeight(0);
-    this.panelDirty = true;
   }
 
   onPrintDone(job) {
-    if (job.stopped) this.app.toast(`<b>${this.name}</b>: Druck gestoppt.`, 'warn');
-    else if (job.failed) this.app.toast(`<b>${this.name}</b>: Druck beendet – aber fehlerhaft: ${job.failed}.`, 'err', 7000);
-    else this.app.toast(`<b>${this.name}</b>: Druck fertig! Haube abnehmen und Bauteil entnehmen.`, 'ok', 6000);
-    if (this.fw.sound) {
+    if (this.fw.sound && !job.stopped) {
       const p = this.sfxPos(this.H.touch);
       this.app.audio.beep(p, 2200, 0.15, 0.1, 'sine');
       setTimeout(() => this.app.audio.beep(p, 2800, 0.25, 0.1, 'sine'), 220);
     }
     this.touch.ui.dirty = true;
-    this.panelDirty = true;
+  }
+
+  // refused action: a dull knock at the object
+  deny(obj) {
+    this.app.audio.thunk(this.sfxPos(obj), 0.15, 130, 0.06);
   }
 
   removePart() {
     const part = this.part;
     if (!part || part.height <= 0) return;
-    if (this.coverOn) return this.app.toast('Erst die UV-Haube abnehmen.', 'warn');
-    if (this.fw.job) return this.app.toast('Der Druck läuft noch.', 'warn');
-    if (this.fw.z < 60) return this.app.toast('Plattform erst hochfahren (Werkzeuge → Manuell).', 'warn');
+    if (this.coverOn || this.fw.job || this.fw.z < 60) return this.deny(this.H.plate);
     // move to the wash & cure station
     const mesh = part.mesh;
     this.station.attach(mesh);
@@ -558,22 +615,19 @@ export class ElegooMars4 extends BaseDevice {
     proxy.layers.set(1);
     mesh.add(proxy);
     this.app.interaction.add(mesh, {
-      tooltip: () => ({ title: part.wet ? 'Frisches Resin-Bauteil (klebrig)' : 'Gewaschenes & gehärtetes Bauteil', hint: part.wet ? 'Klicken: in IPA waschen und mit UV nachhärten' : 'Klicken: wegräumen' }),
       onClick: () => {
         if (part.wet) {
+          // washed in IPA and post-cured: the part turns matte
           part.finishCure();
-          this.app.toast('Gewaschen (IPA) und 4 min UV-nachgehärtet – jetzt fest und matt.', 'ok');
+          this.app.audio.click(this.sfxPos(this.station), 0.2, 600, 0.08);
         } else {
           this.app.interaction.remove(mesh);
           part.dispose();
           this.finished = this.finished.filter((f) => f !== part);
-          this.panelDirty = true;
         }
       }
     });
     this.app.audio.click(this.sfxPos(this.H.plate), 0.3, 900, 0.05);
-    this.app.toast('Bauteil mit dem Spachtel abgelöst und in die Wash-&-Cure-Station gelegt.', 'ok');
-    this.panelDirty = true;
   }
 
   // ---------------------------------------------------------------- interactions
@@ -581,19 +635,19 @@ export class ElegooMars4 extends BaseDevice {
     const I = this.app.interaction;
     const H = this.H;
     I.add(H.power, {
-      tooltip: () => ({ title: `Netzschalter (${this.fw.powered ? 'EIN' : 'AUS'})`, hint: 'Klicken zum Umschalten' }),
       onClick: () => {
         this.fw.setPower(!this.fw.powered);
+        H.rocker.rotation.x = this.fw.powered ? 0.25 : -0.25;
         this.app.audio.thunk(this.sfxPos(H.power), 0.3, 220, 0.08);
         this.touch.screen = 'home';
         this.touch.ui.dirty = true;
       }
     });
+    H.rocker.rotation.x = -0.25;
     const toPx = (hit) => (hit && hit.uv ? [hit.uv.x * 480, (1 - hit.uv.y) * 320] : null);
     I.add(H.touch, {
       noHighlight: true,
       cursor: 'pointer',
-      tooltip: () => (this.fw.powered ? null : { title: 'Touchscreen (aus)', hint: 'Netzschalter hinten rechts' }),
       onDown: (hit) => {
         const p = toPx(hit);
         if (p && this.fw.powered) this.touch.ui.pointerDown(p[0], p[1]);
@@ -608,36 +662,9 @@ export class ElegooMars4 extends BaseDevice {
         if (p && this.fw.powered) this.touch.ui.pointerMove(p[0], p[1]);
       }
     });
-    I.add(H.usbStick, {
-      tooltip: () => ({ title: this.usb.inserted ? 'USB-Stick (eingesteckt)' : 'USB-Stick', hint: this.usb.inserted ? 'Klicken zum Abziehen' : 'Klicken zum Einstecken' }),
-      onClick: () => {
-        this.usb.inserted = !this.usb.inserted;
-        H.usbStick.position.z = this.usb.inserted ? 115.2 : 150;
-        H.usbStick.position.y = this.usb.inserted ? 30 : 4;
-        this.app.audio.click(this.sfxPos(H.usbStick), 0.2, 1800, 0.03);
-        this.touch.ui.dirty = true;
-      }
-    });
-    I.add(H.cover, {
-      tooltip: () => ({ title: 'UV-Schutzhaube', hint: this.coverOn ? 'Klicken: abnehmen' : 'Klicken: wieder aufsetzen' }),
-      onClick: () => this.toggleCover()
-    });
-    I.add(H.vat, {
-      tooltip: () => {
-        if (this.coverOn) return { title: 'Resin-Wanne', hint: 'Erst die Haube abnehmen' };
-        if (this.film) return { title: 'Ausgehärtete Folie in der Wanne', hint: 'Klicken: mit dem Kunststoffspachtel abziehen' };
-        return { title: `Resin-Wanne (${Math.round(this.vatMl)} ml)`, hint: this.vatIn ? 'Klicken: Wanne herausnehmen' : 'Klicken: Wanne einsetzen' };
-      },
-      onClick: () => this.onVatClick()
-    });
-    I.add(this.bottle, {
-      tooltip: () => ({ title: `${this.resin.name} (${Math.round(this.bottleMl)} ml)`, hint: this.coverOn ? 'Erst die Haube abnehmen' : 'Klicken: 100 ml in die Wanne gießen' }),
-      onClick: () => this.pourResin()
-    });
-    I.add(H.plate, {
-      tooltip: () => ({ title: 'Druckplattform', hint: this.part && this.part.height > 0 && !this.fw.job ? 'Klicken: Bauteil abnehmen' : 'Lasergravierte Alu-Plattform' }),
-      onClick: () => this.removePart()
-    });
+    I.add(H.cover, { onClick: () => this.toggleCover() });
+    I.add(H.vat, { onClick: () => this.onVatClick() });
+    I.add(H.plate, { onClick: () => this.removePart() });
   }
 
   toggleCover() {
@@ -649,37 +676,44 @@ export class ElegooMars4 extends BaseDevice {
     this.coverAnim = { t: 0, from, to, lift: 220 };
     this.coverOn = !on;
     this.app.audio.thunk(this.sfxPos(c), 0.2, 260, 0.08);
-    if (!this.coverOn && this.fw.uv) this.app.toast('Achtung: UV-Licht! Haube während der Belichtung aufsetzen.', 'warn');
   }
 
   onVatClick() {
-    if (this.coverOn) return this.app.toast('Erst die UV-Haube abnehmen (Haube anklicken).', 'warn');
+    if (this.coverOn) return this.deny(this.H.cover);
     if (this.film) {
+      // scrape the cured film off the FEP
       this.H.vat.remove(this.film);
       this.film.geometry.dispose();
       this.film = null;
       this.app.audio.click(this.sfxPos(this.H.vat), 0.25, 700, 0.06);
-      this.app.toast('Ausgehärtete Folie entfernt.', 'ok');
       return;
     }
-    if (this.fw.job || this.fw.task) return this.app.toast('Nicht während der Drucker arbeitet.', 'warn');
-    if (this.fw.z < 60) return this.app.toast('Plattform erst hochfahren (Werkzeuge → Manuell), sonst stößt die Wanne an.', 'warn');
+    if (this.fw.job || this.fw.task || this.fw.z < 60 || this.vatAnim) return this.deny(this.H.vat);
+    if (!this.vatIn && this.vatMl > 1) {
+      // vat on the bench: filter the resin back into its bottle
+      const b = this.bottles.find((x) => x.resin === this.vatResin);
+      if (b) b.ml = Math.min(1000, b.ml + this.vatMl * 0.97);
+      this.vatMl = 0;
+      this.vatResin = null;
+      this.app.audio.click(this.sfxPos(this.H.vat), 0.25, 500, 0.12);
+      return;
+    }
     this.vatIn = !this.vatIn;
     const v = this.H.vat;
     this.vatAnim = { t: 0, from: v.position.clone(), to: this.vatIn ? new THREE.Vector3(0, EGEO.FEP_Y - 0.4, EGEO.LCD_Z) : new THREE.Vector3(-205, 0.2, -170) };
     this.app.audio.click(this.sfxPos(v), 0.25, 900, 0.05);
-    this.panelDirty = true;
   }
 
-  pourResin() {
-    if (this.coverOn) return this.app.toast('Erst die UV-Haube abnehmen.', 'warn');
-    if (!this.vatIn) return this.app.toast('Erst die Wanne einsetzen.', 'warn');
-    if (this.vatMl >= VAT_MAX_ML - 5) return this.app.toast('Die Wanne ist bis zur MAX-Markierung voll.', 'warn');
-    if (this.bottleMl <= 1) return this.app.toast('Die Flasche ist leer.', 'warn');
+  pourResin(b) {
     if (this.pourAnim) return;
-    const amount = Math.min(100, VAT_MAX_ML - this.vatMl, this.bottleMl);
-    this.pourAnim = { t: 0, amount, poured: 0 };
-    this.panelDirty = true;
+    const mixed = this.vatMl > 1 && this.vatResin && this.vatResin !== b.resin;
+    if (this.coverOn || !this.vatIn || mixed || this.vatMl >= VAT_MAX_ML - 5 || b.ml <= 1) return this.deny(b.group);
+    const amount = Math.min(100, VAT_MAX_ML - this.vatMl, b.ml);
+    if (this.vatMl < 1) {
+      this.vatResin = b.resin;
+      this.applyResin();
+    }
+    this.pourAnim = { t: 0, amount, poured: 0, bottle: b };
   }
 
   // ---------------------------------------------------------------- audio
@@ -757,9 +791,10 @@ export class ElegooMars4 extends BaseDevice {
     if (this.pourAnim) {
       const a = this.pourAnim;
       a.t += realDt;
-      const b = this.bottle;
+      const bt = a.bottle;
+      const b = bt.group;
       const vp = new THREE.Vector3(-150, 210, 20);
-      const home = new THREE.Vector3(-220, 0, 60);
+      const home = bt.home;
       if (a.t < 0.8) {
         const k = a.t / 0.8;
         b.position.lerpVectors(home, vp, k);
@@ -770,13 +805,14 @@ export class ElegooMars4 extends BaseDevice {
         const d = target - a.poured;
         a.poured = target;
         this.vatMl += d;
-        this.bottleMl -= d;
+        bt.ml -= d;
         if (!this.pourStream) {
           this.pourStream = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 3, 1, 10), new THREE.MeshPhysicalMaterial({ color: this.resin.liquid, roughness: 0.1, clearcoat: 1 }));
           this.root.add(this.pourStream);
         }
         const top = 205;
         const bottom = EGEO.FEP_Y + 2;
+        this.pourStream.material.color.set(this.resin.liquid);
         this.pourStream.scale.y = top - bottom;
         this.pourStream.position.set(-58, (top + bottom) / 2, 30);
         this.pourStream.visible = true;
@@ -789,7 +825,6 @@ export class ElegooMars4 extends BaseDevice {
         b.position.copy(home);
         b.rotation.z = 0;
         this.pourAnim = null;
-        this.panelDirty = true;
       }
     }
     if (this.plateSettle) {
@@ -808,131 +843,6 @@ export class ElegooMars4 extends BaseDevice {
       const moving = fw.z !== fw.zTarget;
       this.voices.z.set(moving ? fw.zSpeed * 60 : 0, 1);
       this.voices.fan.set(fw.powered && (fw.job || uv) ? 0.7 : 0);
-    }
-  }
-
-  // ---------------------------------------------------------------- HUD
-  status() {
-    const fw = this.fw;
-    if (!fw.powered) return { state: 'off', text: 'Aus' };
-    if (fw.booting > 0) return { state: 'busy', text: 'Startet …' };
-    if (fw.job) return fw.paused ? { state: 'warn', text: 'Pausiert' } : { state: 'busy', text: `Druckt ${Math.floor((fw.job.layer / fw.job.layers) * 100)}% · Schicht ${fw.job.layer + 1}` };
-    if (fw.lastJob && fw.lastJob.done) return { state: 'on', text: 'Druck fertig ✓' };
-    if (fw.task) return { state: 'busy', text: 'Beschäftigt …' };
-    return { state: 'on', text: 'Bereit' };
-  }
-
-  buildPanel(el) {
-    this.panelEl = el;
-    el.innerHTML = '';
-    this.kv = h('dl', { class: 'kv' });
-    el.appendChild(h('div', { class: 'section' }, h('h4', {}, 'Zustand'), this.kv));
-    el.appendChild(
-      h(
-        'div',
-        { class: 'section' },
-        h('div', {
-          class: 'hint',
-          html: 'Einschalten: <b>Netzschalter hinten</b> (Kamera „Rückseite“). Bedienung über den <b>Touchscreen</b> vorne. Vor dem Druck: <b>Haube abnehmen</b>, <b>Resin einfüllen</b> (Flasche anklicken), Haube wieder aufsetzen. Nach dem Druck: Bauteil an der Plattform anklicken.'
-        })
-      )
-    );
-    this.resinSec = h('div', { class: 'section' });
-    el.appendChild(this.resinSec);
-    // files
-    const fileSec = h('div', { class: 'section' });
-    this.fileList = h('ul', { class: 'file-list' });
-    const input = h('input', { type: 'file', accept: '.stl', style: 'display:none' });
-    input.addEventListener('change', () => {
-      if (input.files[0]) this.importStl(input.files[0]);
-      input.value = '';
-    });
-    fileSec.append(
-      h('h4', {}, 'USB-Stick'),
-      h('p', {}, 'Eigene Modelle als STL hinzufügen – sie werden mit den Resin-Profilen (0,05 mm) vorbereitet. Modelle sollten eine flache Unterseite haben (keine Stützstrukturen).'),
-      this.fileList,
-      h('button', { class: 'btn primary', style: 'margin-top:8px', onclick: () => input.click() }, 'STL auf Stick kopieren …'),
-      input
-    );
-    el.appendChild(fileSec);
-    this.renderPanelParts();
-  }
-
-  renderPanelParts() {
-    if (!this.resinSec) return;
-    const r = this.resinSec;
-    r.innerHTML = '';
-    const grid = h('div', { class: 'swatches' });
-    for (const res of RESINS) {
-      const b = h('button', { class: `swatch${res === this.resin ? ' active' : ''}`, disabled: this.vatMl > 1 && res !== this.resin, title: res.name }, h('span', { class: 'chip', style: `background:${res.color}` }), h('span', {}, res.name.replace('ELEGOO ', '')));
-      b.addEventListener('click', () => {
-        if (this.vatMl > 1) return;
-        this.resin = res;
-        this.bottleMl = 1000;
-        this.applyResin();
-        this.renderPanelParts();
-      });
-      grid.appendChild(b);
-    }
-    r.append(
-      h('h4', {}, 'Resin'),
-      h('p', {}, `Wanne: ${Math.round(this.vatMl)} ml (max. ${VAT_MAX_ML} ml) · Flasche: ${Math.round(this.bottleMl)} ml`),
-      h(
-        'div',
-        { class: 'row' },
-        h('button', { class: 'btn', onclick: () => this.pourResin() }, '100 ml eingießen'),
-        h('button', { class: 'btn', disabled: this.fw.job || this.vatMl < 1, onclick: () => { if (this.coverOn) return this.app.toast('Erst die Haube abnehmen.', 'warn'); this.bottleMl += this.vatMl * 0.95; this.vatMl = 0; this.renderPanelParts(); } }, 'Wanne leeren')
-      ),
-      h('p', {}, 'Resin wechseln geht nur mit leerer Wanne:'),
-      grid
-    );
-    // files
-    this.fileList.innerHTML = '';
-    for (const f of this.usb.files) {
-      this.fileList.appendChild(h('li', { class: 'file-item' }, h('span', { class: 'fname', title: f.name }, f.name), h('span', { class: 'fmeta' }, `${f.info.layers} Schichten · ${Math.round(f.info.time / 60)} min`)));
-    }
-    if (this.finished.length) r.append(h('p', {}, `${this.finished.length} Bauteil(e) in der Wash-&-Cure-Station (rechts).`));
-  }
-
-  refreshPanel() {
-    if (!this.kv) return;
-    const fw = this.fw;
-    const rows = [
-      ['Strom', fw.powered ? 'EIN' : 'AUS'],
-      ['Status', this.status().text],
-      ['Phase', fw.powered ? fw.phaseLabel('de') : '—'],
-      ['Z-Achse', `${fw.z.toFixed(2)} mm`],
-      ['UV-Licht', fw.uv ? 'AN (405 nm)' : 'aus'],
-      ['Haube', this.coverOn ? 'aufgesetzt' : 'abgenommen'],
-      ['Wanne', this.vatIn ? `${Math.round(this.vatMl)} ml Resin` : 'entnommen'],
-      ['Nivelliert', fw.leveled ? 'ja' : 'nein']
-    ];
-    this.kv.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
-    if (this.panelDirty) {
-      this.panelDirty = false;
-      this.renderPanelParts();
-    }
-  }
-
-  async importStl(file) {
-    try {
-      const geo = new STLLoader().parse(await file.arrayBuffer());
-      const { positions, bbox } = toResinPositions(geo, true);
-      const size = bbox.getSize(new THREE.Vector3());
-      if (size.x > EGEO.LCD_W || size.y > EGEO.LCD_D || size.z > EGEO.MAX_Z) {
-        this.app.toast(`Zu groß für den Mars 4 (${size.x.toFixed(0)}×${size.y.toFixed(0)}×${size.z.toFixed(0)} mm, max 153×77×175).`, 'warn', 6000);
-        return;
-      }
-      const params = defaultParams(this.resin);
-      const info = analyse(positions, bbox, params);
-      const name = file.name.replace(/\.stl$/i, '') + '_0.05mm.goo';
-      this.usb.files.push({ name, title: file.name.replace(/\.stl$/i, ''), positions, bbox, params, info, thumb: resinThumb(positions) });
-      this.touch.ui.dirty = true;
-      this.renderPanelParts();
-      this.app.toast(`<b>${name}</b> vorbereitet: ${info.layers} Schichten, ca. ${Math.round(info.time / 60)} min, ${info.volumeMl.toFixed(1)} ml Resin.`, 'ok', 6000);
-    } catch (e) {
-      console.error(e);
-      this.app.toast(`STL konnte nicht gelesen werden: ${e.message}`, 'err');
     }
   }
 }

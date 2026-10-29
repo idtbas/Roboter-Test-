@@ -1,30 +1,6 @@
-// USB drive contents + G-code metadata/thumbnail parsing (PrusaSlicer
+// G-code metadata/thumbnail parsing (PrusaSlicer
 // compatible), including binary G-code (.bgcode: deflate / heatshrink /
 // MeatPack) as written by PrusaSlicer for the MK4/MK4S.
-
-export class UsbDrive {
-  constructor() {
-    this.inserted = true;
-    this.files = [];
-    this.listeners = new Set();
-  }
-
-  add(file) {
-    const i = this.files.findIndex((f) => f.name === file.name);
-    if (i >= 0) this.files.splice(i, 1, file);
-    else this.files.push(file);
-    this.changed();
-  }
-
-  remove(file) {
-    this.files = this.files.filter((f) => f !== file);
-    this.changed();
-  }
-
-  changed() {
-    for (const l of this.listeners) l();
-  }
-}
 
 // --------------------------------------------------------------- parsing
 function parseDuration(s) {
@@ -358,9 +334,9 @@ export async function loadUserFile(file) {
     const r = await parseBgcode(buf);
     const extra = parseGcodeText(r.text.slice(-60000));
     const meta = Object.assign({}, extra.meta, r.meta);
-    return { name, size: file.size, text: r.text, meta, thumbImg: thumbToImage(r.thumbs), printable: true, source: 'user' };
+    return { kind: 'gcode', name, size: file.size, text: r.text, meta, thumbImg: thumbToImage(r.thumbs), printable: true, source: 'user' };
   }
   const text = await file.text();
   const { meta, thumbs } = parseGcodeText(text);
-  return { name, size: file.size, text, meta, thumbImg: thumbToImage(thumbs), printable: true, source: 'user' };
+  return { kind: 'gcode', name, size: file.size, text, meta, thumbImg: thumbToImage(thumbs), printable: true, source: 'user' };
 }

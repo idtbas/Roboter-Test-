@@ -41,6 +41,7 @@ export class SlicerService {
     const img = new Image();
     img.src = thumb;
     return {
+      kind: 'gcode',
       name,
       size: text.length,
       text,

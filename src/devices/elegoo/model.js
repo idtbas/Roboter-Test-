@@ -82,13 +82,12 @@ export function buildMarsModel(M) {
   usb.userData.keep = true;
   root.add(usb);
   H.usbPort = usb;
-  const stick = group('usb-stick');
-  stick.add(box(12.2, 4.6, 12, M.zinc, { z: -4 }));
-  stick.add(rbox(18, 8, 34, 3, new THREE.MeshPhysicalMaterial({ color: 0x8a1c1c, roughness: 0.4, clearcoat: 0.4 }), { z: 17 }));
-  stick.userData.keep = true;
-  stick.position.set(108, 30, 115.2);
-  root.add(stick);
-  H.usbStick = stick;
+  // USB socket anchor: +x of the anchor points out of the front panel
+  const usbSocket = new THREE.Object3D();
+  usbSocket.position.set(108, 30, 115.7);
+  usbSocket.rotation.y = -Math.PI / 2;
+  root.add(usbSocket);
+  H.usbSocket = usbSocket;
 
   // power rocker on the back
   const pw = group('power', { x: 100, y: 40, z: -115.2 });

@@ -1,7 +1,7 @@
-import { CanvasUI } from '../../core/canvasui.js';
-import { LASER_MATERIALS } from './burn.js';
-import { generateJob, estimateTime, drawObjectFill, objectOutlines, textAspect, textFont, FONTS, sampleMandala, boundsOf } from './lasergen.js';
-import { GRBL_ERRORS, GRBL_ALARMS } from './grbl.js';
+import { LASER_MATERIALS } from '../devices/ortur/burn.js';
+import { generateJob, estimateTime, drawObjectFill, objectOutlines, textAspect, FONTS, sampleMandala, boundsOf } from '../devices/ortur/lasergen.js';
+import { GRBL_ERRORS, GRBL_ALARMS } from '../devices/ortur/grbl.js';
+import { pickFiles } from './os.js';
 
 // ---------------------------------------------------------------------------
 // "LaserWerk 2" – laser control software running on the laptop. Talks to the
@@ -24,10 +24,9 @@ const BAUD = 115200;
 let nextId = 1;
 
 export class LaserApp {
-  constructor(dev) {
+  constructor(dev, ui) {
     this.dev = dev;
-    this.ui = new CanvasUI(W, H, { scale: 1.25 });
-    this.ui.theme = { btn: '#33373d', primary: '#2f7cf6', danger: '#c9323a', btnActive: '#2f5fa8' };
+    this.ui = ui;
     this.objects = [];
     this.selected = null;
     this.tool = 'select';
@@ -425,11 +424,8 @@ export class LaserApp {
   }
 
   importImage() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*,.svg';
-    input.onchange = () => {
-      const f = input.files[0];
+    pickFiles('image/*,.svg', false, (files) => {
+      const f = files[0];
       if (!f) return;
       const url = URL.createObjectURL(f);
       const img = new Image();
@@ -450,8 +446,7 @@ export class LaserApp {
         URL.revokeObjectURL(url);
       };
       img.src = url;
-    };
-    input.click();
+    });
   }
 
   deleteSelected() {
@@ -501,11 +496,8 @@ export class LaserApp {
   }
 
   // ------------------------------------------------------------------ render
-  render(realDt, force = false) {
-    this.redrawT -= realDt;
-    if (!force && !this.ui.dirty && this.redrawT > 0) return false;
-    this.redrawT = 0.25;
-    this.ui.dirty = false;
+  // called by the laptop OS before drawing
+  prepare() {
     if (this.estimateDirty && !this.job) {
       this.estimateDirty = false;
       try {
@@ -519,8 +511,6 @@ export class LaserApp {
         this.estimate = null;
       }
     }
-    this.ui.frame((ui, ctx) => this.draw(ui, ctx));
-    return true;
   }
 
   draw(ui, ctx) {
@@ -535,7 +525,6 @@ export class LaserApp {
     this.drawBottom(ui);
     this.drawRight(ui);
     this.drawStatus(ui);
-    this.drawTaskbar(ui);
     this.drawMenus(ui);
     if (this.dialog) this.drawDialog(ui);
   }
@@ -1169,18 +1158,6 @@ export class LaserApp {
       'Gerät: Ortur Laser Master 3 (GRBL)'
     ].filter(Boolean);
     ui.text(parts.join('     ·     '), 10, STATUS_Y + 11, { size: 12, color: '#fff' });
-  }
-
-  drawTaskbar(ui) {
-    const y = H - TASK_H;
-    ui.rect(0, y, W, TASK_H, '#0d0f12');
-    ui.rect(8, y + 5, 18, 18, '#3b8cff', 3);
-    ui.rect(40, y + 3, 120, 22, '#22262c', 4);
-    ui.rect(46, y + 8, 12, 12, '#2f7cf6', 2);
-    ui.text('LaserWerk 2', 64, y + 14, { size: 12, color: '#ddd' });
-    const d = new Date();
-    ui.text(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`, W - 12, y + 14, { size: 12, color: '#ddd', align: 'right' });
-    ui.text(this.dev.cableConnected ? 'USB ⇄' : '', W - 70, y + 14, { size: 11, color: '#8ab4ff', align: 'right' });
   }
 
   drawDialog(ui) {

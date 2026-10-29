@@ -2,9 +2,9 @@
 <html lang="de">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Maker-Werkstatt 3D – 3D-Drucker &amp; Laser-Simulator</title>
-  <meta name="description" content="Realistischer 3D-Simulator im Browser: Original Prusa MK4S, Ortur Laser Master 3 und ELEGOO Mars 4 in Echtzeit bedienen – nur über die echten Bedienelemente." />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Maker-Werkstatt 3D</title>
+  <meta name="description" content="Realistische 3D-Werkstatt im Browser: Original Prusa MK4S, Ortur Laser Master 3 und ELEGOO Mars 4 in Echtzeit bedienen – nur über ihre eigenen Bedienelemente." />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111418'/%3E%3Cpath d='M16 44h32M22 44V22h20v22M28 22v-6h8v6M30 30h4v8h-4z' stroke='%23fa6831' stroke-width='4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="./src/ui/style.css" />
 </head>
@@ -12,106 +12,11 @@
   <canvas id="view" tabindex="0"></canvas>
 
   <div id="loader">
-    <div class="loader-card">
-      <div class="loader-logo">Maker-Werkstatt <span>3D</span></div>
-      <div class="loader-sub">Werkstatt wird eingerichtet …</div>
-      <div class="loader-bar"><div id="loader-progress"></div></div>
-      <div id="loader-step" class="loader-step">Starte</div>
-    </div>
+    <div class="loader-bar"><div id="loader-progress"></div></div>
   </div>
 
-  <header id="topbar" class="hidden">
-    <div class="brand">
-      <div class="brand-mark"></div>
-      <div>
-        <div class="brand-name">Maker-Werkstatt <span>3D</span></div>
-        <div class="brand-sub">Deine virtuelle Hobby-Werkstatt</div>
-      </div>
-    </div>
-    <nav id="device-tabs"></nav>
-    <div class="top-tools">
-      <label class="tool" title="Simulationsgeschwindigkeit (1× = Echtzeit)">
-        <span class="tool-label">Zeit</span>
-        <select id="sim-speed">
-          <option value="1" selected>1× Echtzeit</option>
-          <option value="2">2×</option>
-          <option value="5">5×</option>
-          <option value="10">10×</option>
-          <option value="30">30×</option>
-          <option value="100">100×</option>
-        </select>
-      </label>
-      <label class="tool" title="Grafikqualität">
-        <span class="tool-label">Grafik</span>
-        <select id="quality">
-          <option value="high" selected>Hoch</option>
-          <option value="medium">Mittel</option>
-          <option value="low">Niedrig</option>
-        </select>
-      </label>
-      <button id="sound-toggle" class="icon-btn" title="Ton an/aus" aria-label="Ton an/aus"></button>
-      <button id="help-btn" class="icon-btn" title="Hilfe" aria-label="Hilfe">?</button>
-    </div>
-  </header>
-
-  <aside id="side-panel" class="hidden">
-    <div class="panel-head">
-      <div>
-        <div id="panel-title" class="panel-title"></div>
-        <div id="panel-sub" class="panel-sub"></div>
-      </div>
-      <button id="panel-collapse" class="icon-btn small" title="Einklappen" aria-label="Einklappen">‹</button>
-    </div>
-    <div id="panel-body"></div>
-  </aside>
-
-  <div id="cam-bar" class="hidden"></div>
-  <div id="tooltip" class="hidden"></div>
-  <div id="toast-stack"></div>
-
-  <div id="help" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="help-title">
-    <div class="modal-card">
-      <button class="modal-close icon-btn" data-close aria-label="Schließen">×</button>
-      <h2 id="help-title">Willkommen in deiner Werkstatt</h2>
-      <p>Hier stehen drei echte Geräte, die du genau so bedienst wie in Wirklichkeit – <b>nur über ihre eigenen Bedienelemente</b>. Es gibt keine magischen Zusatzknöpfe: Was das echte Gerät nicht kann, kann es hier auch nicht.</p>
-      <div class="help-grid">
-        <div>
-          <h3>Kamera</h3>
-          <ul>
-            <li><b>Linke Maustaste ziehen</b> (auf freier Fläche): drehen</li>
-            <li><b>Rechte Maustaste / Shift</b>: verschieben</li>
-            <li><b>Mausrad</b>: zoomen</li>
-            <li>Unten: Kamera-Positionen pro Gerät</li>
-          </ul>
-        </div>
-        <div>
-          <h3>Bedienen</h3>
-          <ul>
-            <li>Alles, was beim Überfahren aufleuchtet, kannst du anfassen.</li>
-            <li><b>Drehknopf</b> (Prusa): Mausrad oder Ziehen = drehen, Klick = drücken. Alternativ Pfeiltasten + Enter.</li>
-            <li><b>Touchscreens</b>: einfach antippen.</li>
-            <li><b>Laptop</b> (Laser): Kamera „Laptop“ wählen, dann wie am PC bedienen. Tippen geht über deine Tastatur.</li>
-          </ul>
-        </div>
-        <div>
-          <h3>Geräte</h3>
-          <ul>
-            <li><b>Original Prusa MK4S</b> – FDM-Drucker, 3,5″-Farbdisplay mit Drehknopf, USB-Stick.</li>
-            <li><b>Ortur Laser Master 3</b> – 10-W-Diodenlaser ohne Display: Netzschalter, Schlüssel, Not-Aus, gesteuert per USB vom Laptop (GRBL).</li>
-            <li><b>ELEGOO Mars 4</b> – MSLA-Resin-Drucker mit 3,5″-Touchscreen.</li>
-          </ul>
-        </div>
-        <div>
-          <h3>Zeit</h3>
-          <ul>
-            <li>Alles läuft in <b>Echtzeit</b>: Aufheizen, Drucken und Lasern dauert so lange wie in echt.</li>
-            <li>Oben rechts kannst du die Zeit beschleunigen, wenn du nicht stundenlang warten willst.</li>
-            <li>Die Geräte arbeiten weiter, auch wenn du woanders hinschaust oder den Tab verlässt – wie echte Maschinen.</li>
-          </ul>
-        </div>
-      </div>
-      <p class="fine">Unabhängiges Fan- und Lernprojekt. Produktnamen sind Marken ihrer jeweiligen Inhaber (Prusa Research, ORTUR, ELEGOO); es besteht keine Verbindung zu den Herstellern. Die Geräte sind nach öffentlich bekannten Daten nachgebaut und vereinfacht.</p>
-    </div>
+  <div id="phone-note" class="hidden">
+    <p>Die Maker-Werkstatt ist für Computer und iPad mit Maus und Tastatur gemacht.</p>
   </div>
 
   <script type="module" src="./src/main.js"></script>

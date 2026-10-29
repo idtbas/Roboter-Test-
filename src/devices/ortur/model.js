@@ -360,13 +360,17 @@ export function buildLaptop(M) {
   // webcam
   lid.add(cylZ(1.4, 0.4, M.plasticBlack, { y: 205, z: 0.6 }, 12));
   g.add(lid);
-  // USB-A port on the left side
+  // USB-A ports: left (laser cable), right (free for USB sticks)
   g.add(box(1, 5, 12, M.plasticBlack, { x: -W / 2 - 0.3, y: 7, z: -20 }));
+  g.add(box(1, 5, 13, M.plasticBlack, { x: W / 2 + 0.3, y: 7, z: 10 }));
+  const usbSocket = new THREE.Object3D();
+  usbSocket.position.set(W / 2 + 0.6, 7, 10);
+  g.add(usbSocket);
   keys.userData.keep = true;
   mergeStatic(lid);
   lid.userData.keep = true;
   mergeStatic(g);
-  return { group: g, screen, screenMat, lid };
+  return { group: g, screen, screenMat, lid, usbSocket };
 }
 
 // ---------------------------------------------------------------------------

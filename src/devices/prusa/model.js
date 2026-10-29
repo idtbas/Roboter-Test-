@@ -240,18 +240,11 @@ export function buildPrusaModel(M) {
   usbPort.userData.keep = true;
   lcd.add(usbPort);
   H.usbPort = usbPort;
-  // USB stick (inserted state); moved by the device logic
-  const stick = group('usb-stick');
-  stick.add(box(14.5, 6.4, 12.2, M.zinc, { x: 6 }));
-  stick.add(rbox(36, 9, 19, 3, M.plasticGlossBlack, { x: 30 }));
-  const stickLabel = textPlane('USB', { w: 14, h: 5, color: '#fa6831', font: '800 64px Inter, Arial', px: 256 });
-  stickLabel.position.set(32, 4.6, 0);
-  stickLabel.rotation.x = -Math.PI / 2;
-  stick.add(stickLabel);
-  stick.userData.keep = true;
-  lcd.add(stick);
-  stick.position.set(88.4, -14, -2);
-  H.usbStick = stick;
+  // USB socket anchor (+x points out of the port); the stick is a separate item
+  const usbSocket = new THREE.Object3D();
+  usbSocket.position.set(88.9, -14, -2);
+  lcd.add(usbSocket);
+  H.usbSocket = usbSocket;
   H.lcd = lcd;
   mergeStatic(lcd);
   lcd.userData.keep = true;
@@ -519,30 +512,7 @@ export function buildPrusaModel(M) {
   // ======================= Spool =========================================
   const spool = group('spool', { x: 0, y: GEO.FRAME_TOP + 104, z: GEO.FRAME_Z });
   spool.userData.keep = true;
-  const spoolInner = new THREE.Group();
-  const flangeShape = new THREE.Shape();
-  flangeShape.absarc(0, 0, 100, 0, Math.PI * 2, false);
-  flangeShape.holes.push(circlePath(26.5, 0, 0, true));
-  for (let i = 0; i < 6; i++) {
-    const a0 = (i / 6) * Math.PI * 2 + 0.12;
-    const a1 = ((i + 1) / 6) * Math.PI * 2 - 0.12;
-    const hp = new THREE.Path();
-    hp.absarc(0, 0, 88, a1, a0, true);
-    hp.absarc(0, 0, 42, a0, a1, false);
-    flangeShape.holes.push(hp);
-  }
-  const flMat = M.plasticGlossBlack;
-  const fl1 = extrude(flangeShape, 3, flMat, { x: -33, ry: Math.PI / 2 }, { curveSegments: 48 });
-  const fl2 = extrude(flangeShape, 3, flMat, { x: 33, ry: Math.PI / 2 }, { curveSegments: 48 });
-  spoolInner.add(fl1, fl2);
-  spoolInner.add(cylX(42, 64, flMat, {}, 48));
-  const filMat = new THREE.MeshPhysicalMaterial({ color: 0x18191c, roughness: 0.38, clearcoat: 0.3 });
-  const windTex = makeWindingTexture();
-  filMat.normalMap = windTex;
-  filMat.normalScale = new THREE.Vector2(1.2, 1.2);
-  const windings = cylX(85, 63, filMat, {}, 96);
-  spoolInner.add(windings);
-  H.spoolWindings = windings;
+  const { inner: spoolInner, filMat } = buildSpool(M, 0x18191c);
   H.filamentMat = filMat;
   spool.add(spoolInner);
   H.spool = spool;
@@ -557,6 +527,49 @@ export function buildPrusaModel(M) {
   root.add(frame);
   H.frame = frame;
   return { root, H };
+}
+
+// 1 kg filament spool (Prusament style), axis along X. Returns the rotating
+// inner group and the filament material (its colour = the filament colour).
+let flangeGeo = null;
+export function buildSpool(M, color) {
+  const inner = new THREE.Group();
+  if (!flangeGeo) {
+    const flangeShape = new THREE.Shape();
+    flangeShape.absarc(0, 0, 100, 0, Math.PI * 2, false);
+    flangeShape.holes.push(circlePath(26.5, 0, 0, true));
+    for (let i = 0; i < 6; i++) {
+      const a0 = (i / 6) * Math.PI * 2 + 0.12;
+      const a1 = ((i + 1) / 6) * Math.PI * 2 - 0.12;
+      const hp = new THREE.Path();
+      hp.absarc(0, 0, 88, a1, a0, true);
+      hp.absarc(0, 0, 42, a0, a1, false);
+      flangeShape.holes.push(hp);
+    }
+    flangeGeo = new THREE.ExtrudeGeometry(flangeShape, { depth: 3, bevelEnabled: false, curveSegments: 48 });
+    flangeGeo.translate(0, 0, -1.5);
+  }
+  const flMat = M.plasticGlossBlack;
+  for (const x of [-33, 33]) {
+    const fl = new THREE.Mesh(flangeGeo, flMat);
+    fl.position.x = x;
+    fl.rotation.y = Math.PI / 2;
+    fl.castShadow = true;
+    fl.receiveShadow = true;
+    inner.add(fl);
+  }
+  inner.add(cylX(42, 64, flMat, {}, 48));
+  const filMat = new THREE.MeshPhysicalMaterial({ color, roughness: 0.38, clearcoat: 0.3 });
+  filMat.normalMap = windingTexture();
+  filMat.normalScale = new THREE.Vector2(1.2, 1.2);
+  inner.add(cylX(85, 63, filMat, {}, 96));
+  return { inner, filMat };
+}
+
+let windTex = null;
+function windingTexture() {
+  if (!windTex) windTex = makeWindingTexture();
+  return windTex;
 }
 
 function roundedRectHole(w, h, r, cx, cy) {

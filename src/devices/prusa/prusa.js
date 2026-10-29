@@ -1,15 +1,14 @@
 import * as THREE from 'three';
-import { BaseDevice, h } from '../base.js';
-import { buildPrusaModel, GEO } from './model.js';
-import { PrusaFirmware, materialById } from './firmware.js';
+import { BaseDevice } from '../base.js';
+import { buildPrusaModel, buildSpool, GEO } from './model.js';
+import { PrusaFirmware } from './firmware.js';
 import { PrusaLCD } from './lcd.js';
 import { PrintVisualizer } from './printvis.js';
-import { UsbDrive, loadUserFile } from './files.js';
 import { MotorVoice, FanVoice } from '../../core/audio.js';
-import { SlicerService } from '../../slicer/service.js';
-import { SAMPLE_MODELS, geometryToPrinterPositions, placeZUp } from '../../slicer/models.js';
-import { PROFILES, FILAMENTS } from '../../slicer/slicer.js';
-import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { SAMPLE_MODELS, geometryToPrinterPositions } from '../../slicer/models.js';
+import { buildUsbStick, UsbStick } from '../../core/hand.js';
+import { guideCard } from '../../core/workshop.js';
+import { box, cylX, rbox, group, mergeStatic } from '../../core/parts.js';
 
 export const SPOOLS = [
   { id: 'pla-azure', name: 'Prusament PLA Azure Blue', type: 'PLA', color: '#2a6fd6' },
@@ -20,8 +19,7 @@ export const SPOOLS = [
   { id: 'pla-green', name: 'Prusament PLA Mystic Green', type: 'PLA', color: '#2f7a52' },
   { id: 'petg-ultra', name: 'Prusament PETG Ultramarine Blue', type: 'PETG', color: '#1c3fa8' },
   { id: 'petg-black', name: 'Prusament PETG Jet Black', type: 'PETG', color: '#101113' },
-  { id: 'petg-orange', name: 'Prusament PETG Prusa Orange', type: 'PETG', color: '#f06a2a' },
-  { id: 'asa-grey', name: 'Prusament ASA Galaxy Grey', type: 'ASA', color: '#6f7378' }
+  { id: 'petg-orange', name: 'Prusament PETG Prusa Orange', type: 'PETG', color: '#f06a2a' }
 ];
 
 export class PrusaMK4S extends BaseDevice {
@@ -34,11 +32,9 @@ export class PrusaMK4S extends BaseDevice {
     this.root.rotation.y = 0.12;
     this.root.updateMatrixWorld(true);
 
-    this.usb = new UsbDrive();
     this.fw = new PrusaFirmware(this.firmwareHooks());
     this.lcd = new PrusaLCD(this);
     this.vis = new PrintVisualizer(H.printAnchor);
-    this.slicer = new SlicerService();
 
     // LCD texture
     this.screenTex = new THREE.CanvasTexture(this.lcd.canvas);
@@ -54,7 +50,6 @@ export class PrusaMK4S extends BaseDevice {
     this.sheetState = 'bed';
     this.finished = [];
     this.knobAngle = 0;
-    this.stickState = 'in';
     this.loadcell = 0;
     this.purgeLen = 0;
     this.purgeDrop = null;
@@ -66,6 +61,9 @@ export class PrusaMK4S extends BaseDevice {
 
     this.buildFilamentPath();
     this.buildPurge();
+    this.buildSpoolRack();
+    this.buildUsb();
+    this.buildGuide();
     this.setupInteractions();
     this.setupAudio();
 
@@ -76,9 +74,156 @@ export class PrusaMK4S extends BaseDevice {
     });
     this.view('bed', 'Druckbett', [40, 420, 420], [0, 80, 40]);
     this.view('back', 'Netzteil (hinten)', [560, 330, -300], [170, 110, -130]);
+    this.view('rack', 'Spulenregal', [-470, 330, 520], [-470, 210, -120]);
+    this.view('guide', 'Kurzanleitung', [215, 230, 520], [215, 50, 345], { minDistance: 80 });
+    this.view('prints', 'Fertige Drucke', [420, 300, 220], [420, 20, -120]);
 
     this.updateMechanics(true);
     this.loadSamples();
+  }
+
+  viewById(id) {
+    return this.cameraViews.find((v) => v.id === id);
+  }
+
+  // which camera view fits a double-clicked part
+  focusViewFor(obj) {
+    const H = this.H;
+    const inside = (g) => {
+      let o = obj;
+      while (o) {
+        if (o === g) return true;
+        o = o.parent;
+      }
+      return false;
+    };
+    if (inside(H.lcd) || (this.stickItem && inside(this.stickItem.object))) return this.viewById('display');
+    if (inside(H.carriage)) return this.viewById('nozzle');
+    if (inside(H.bed) || inside(H.sheet)) return this.viewById('bed');
+    if (inside(H.powerSwitch)) return this.viewById('back');
+    if (inside(this.rack)) return this.viewById('rack');
+    if (inside(this.guide)) return this.viewById('guide');
+    if (this.finished.some((f) => inside(f))) return this.viewById('prints');
+    return this.viewById('overview');
+  }
+
+  // ------------------------------------------------------------ USB stick
+  buildUsb() {
+    this.stick = new UsbStick('PRUSA');
+    const hand = this.app.hand;
+    this.usbSocket = hand.addSocket({
+      anchor: this.H.usbSocket,
+      onInsert: () => {
+        this.lcd.dirty = true;
+      },
+      onRemove: () => this.onStickRemoved()
+    });
+    this.stickItem = hand.addItem({ object: buildUsbStick(this.app.M, 0x141518, 'PRUSA'), kind: 'usb', data: this.stick, socket: this.usbSocket });
+    this.stick.listeners.add(() => (this.lcd.dirty = true));
+  }
+
+  // files on the inserted stick that this printer can print
+  get usb() {
+    const st = this.usbSocket.item?.data;
+    return { inserted: !!st, files: st ? st.files.filter((f) => f.kind === 'gcode') : [] };
+  }
+
+  onStickRemoved() {
+    this.lcd.dirty = true;
+    if (this.fw.mode === 'printing') {
+      this.fw.pause();
+      this.lcd.info('usbRemoved', 'warning');
+      this.sound('error');
+    }
+  }
+
+  // ------------------------------------------------------------ spool rack
+  buildSpoolRack() {
+    const M = this.app.M;
+    const rack = group('spool-rack', { x: -470, y: 0, z: -125 });
+    const frameMat = new THREE.MeshPhysicalMaterial({ color: 0x2b2e33, roughness: 0.45, metalness: 0.6 });
+    const st = group('rack-static');
+    for (const x of [-182, 182]) {
+      st.add(box(8, 460, 150, frameMat, { x, y: 230 }));
+      st.add(box(24, 6, 170, frameMat, { x, y: 3 }));
+    }
+    st.add(box(372, 6, 150, frameMat, { y: 3 }));
+    for (const y of [116, 346]) st.add(cylX(9, 372, M.zinc, { y }, 20));
+    mergeStatic(st);
+    rack.add(st);
+    this.rackSlots = [];
+    const defs = SPOOLS.slice(1);
+    defs.forEach((def, i) => {
+      const tier = i < 4 ? 0 : 1;
+      const x = -129 + (i % 4) * 86;
+      const y = tier ? 346 : 116;
+      const holder = new THREE.Group();
+      holder.position.set(x, y, 0);
+      const { inner, filMat } = buildSpool(M, def.color);
+      holder.add(inner);
+      rack.add(holder);
+      const slot = { def, holder, inner, filMat, home: holder.position.clone() };
+      this.rackSlots.push(slot);
+      this.app.interaction.add(holder, { onClick: () => this.swapSpool(slot) });
+    });
+    this.root.add(rack);
+    this.rack = rack;
+  }
+
+  swapSpool(slot) {
+    const fw = this.fw;
+    if (this.spoolAnim) return;
+    if (fw.filament.inSensor || fw.filament.loaded) {
+      // filament still in the extruder: the spool cannot be taken off
+      this.app.audio.thunk(this.sfxPos(this.H.spool), 0.2, 120, 0.08);
+      this.H.spool.position.y += 3;
+      setTimeout(() => (this.H.spool.position.y -= 3), 120);
+      return;
+    }
+    const holderWorld = this.H.spool.getWorldPosition(new THREE.Vector3());
+    const slotWorld = slot.holder.getWorldPosition(new THREE.Vector3());
+    this.spoolAnim = { t: 0, slot, holderWorld, slotWorld, holderHome: this.H.spool.position.clone() };
+    this.app.audio.thunk(this.sfxPos(slot.holder), 0.2, 160, 0.1);
+  }
+
+  updateSpoolAnim(dt) {
+    const a = this.spoolAnim;
+    if (!a) return;
+    a.t = Math.min(1, a.t + dt / 1.6);
+    const k = a.t * a.t * (3 - 2 * a.t);
+    const arc = Math.sin(Math.PI * k) * 160;
+    const toLocal = (obj, world) => obj.parent.worldToLocal(world.clone());
+    const p1 = a.slotWorld.clone().lerp(a.holderWorld, k);
+    p1.y += arc;
+    const p2 = a.holderWorld.clone().lerp(a.slotWorld, k);
+    p2.y += arc * 0.6;
+    p2.z += Math.sin(Math.PI * k) * 120;
+    a.slot.holder.position.copy(toLocal(a.slot.holder, p1));
+    this.H.spool.position.copy(toLocal(this.H.spool, p2));
+    if (a.t >= 1) {
+      // both spools arrived: swap the filament identities and snap back
+      a.slot.holder.position.copy(a.slot.home);
+      this.H.spool.position.copy(a.holderHome);
+      const old = this.spool;
+      this.spool = a.slot.def;
+      a.slot.def = old;
+      a.slot.filMat.color.set(old.color);
+      this.applySpool();
+      this.lastFilamentKey = '';
+      this.spoolAnim = null;
+      this.app.audio.thunk(this.sfxPos(this.H.spool), 0.25, 200, 0.08);
+    }
+  }
+
+  // ------------------------------------------------------------ quick guide
+  buildGuide() {
+    const card = guideCard('Original Prusa MK4S', [
+      { lines: ['• Einschalten: Netzschalter hinten rechts am Netzteil.', '• Drehknopf: Mausrad oder ziehen = drehen, Klick = drücken (oder Pfeiltasten + Enter).', '• Drucken: Drucken → Datei vom USB-Stick → Drucken.', '• Spule wechseln: erst entladen, dann im Regal links anklicken.', '• Danach: Blech anklicken (ab), Blech anklicken (Teil lösen), nochmal (zurück).'] }
+    ], { w: 190, h: 132 });
+    card.position.set(215, 0, 330);
+    card.rotation.y = -0.25;
+    this.root.add(card);
+    this.guide = card;
   }
 
   // ------------------------------------------------------------ firmware
@@ -102,14 +247,11 @@ export class PrusaMK4S extends BaseDevice {
         this.sound('click');
       },
       onPrintEnd: (ok) => {
-        if (ok) {
-          this.sound('done');
-          this.app.toast(`<b>${this.name}</b>: Druck fertig! Nimm das Blech ab, um das Teil zu entnehmen.`, 'ok', 6000);
-        }
+        if (ok) this.sound('done');
       },
       dropPurge: () => this.dropPurge(),
       filamentRemoved: () => {
-        this.app.toast('Filament ist entladen. Du kannst jetzt im Regal eine andere Spule wählen.', 'info');
+        this.lastFilamentKey = '';
       },
       hotendFanOn: () => this.fw.nozzle.temp > 50,
       coldExtrusion: () => {}
@@ -154,11 +296,10 @@ export class PrusaMK4S extends BaseDevice {
       try {
         const positions = geometryToPrinterPositions(m.build());
         const color = parseInt(this.spool.color.slice(1), 16);
-        const file = await this.slicer.makeFile(m.file, positions, m.settings, null, m.settings.material === 'PETG' ? 0x2a50c8 : color);
+        const file = await this.app.slicer.makeFile(m.file, positions, m.settings, null, m.settings.material === 'PETG' ? 0x2a50c8 : color);
         file.source = 'sample';
-        this.usb.add(file);
+        this.stick.add(file);
         this.lcd.dirty = true;
-        this.panelDirty = true;
       } catch (e) {
         console.error('sample slicing failed', m.id, e);
       }
@@ -294,24 +435,21 @@ export class PrusaMK4S extends BaseDevice {
     const fw = this.fw;
 
     I.add(H.powerSwitch, {
-      tooltip: () => ({ title: `Netzschalter (${fw.powered ? 'EIN' : 'AUS'})`, hint: 'Klicken zum Umschalten' }),
       onClick: () => {
         fw.setPower(!fw.powered);
         H.rocker.rotation.x = fw.powered ? -0.25 : 0.25;
         this.app.audio.thunk(this.sfxPos(H.powerSwitch), 0.35, 220, 0.08);
-        if (fw.powered) this.app.toast('Drucker startet …', 'info', 2000);
       }
     });
     H.rocker.rotation.x = 0.25;
 
     I.add(H.knob, {
-      tooltip: () => ({ title: 'Drehknopf', hint: 'Mausrad oder Ziehen = drehen · Klick = drücken · (oder Pfeiltasten + Enter)' }),
       cursor: 'grab',
       onWheel: (steps) => {
         this.rotateKnob(steps);
         return true;
       },
-      // drag (mouse or finger) to turn the knob
+      // drag to turn the knob
       onDown: (hit, e) => {
         this.knobDrag = { x: e.clientX, y: e.clientY, acc: 0 };
         return true;
@@ -333,7 +471,6 @@ export class PrusaMK4S extends BaseDevice {
     });
 
     I.add(H.resetButton, {
-      tooltip: { title: 'Reset-Taste', hint: 'Startet die Elektronik neu (ein laufender Druck geht verloren!)' },
       onClick: () => {
         this.app.audio.click(this.sfxPos(H.resetButton), 0.3, 2500, 0.02);
         if (!fw.powered) return;
@@ -342,40 +479,10 @@ export class PrusaMK4S extends BaseDevice {
       }
     });
 
-    I.add(H.screen, {
-      noHighlight: true,
-      cursor: 'default',
-      tooltip: () => (fw.powered ? { title: 'xLCD-Display (3,5″)', hint: 'Kein Touchscreen – bedienen über den Drehknopf rechts daneben' } : { title: 'Display (aus)', hint: 'Drucker am Netzschalter hinten rechts einschalten' })
-    });
+    I.add(H.sheet, { onClick: () => this.onSheetClick() });
+    I.add(H.spool, { onClick: () => this.insertFilament() });
 
-    I.add(H.usbStick, {
-      tooltip: () => ({ title: this.usb.inserted ? 'USB-Stick (eingesteckt)' : 'USB-Stick', hint: this.usb.inserted ? 'Klicken zum Abziehen' : 'Klicken zum Einstecken' }),
-      onClick: () => this.toggleUsb()
-    });
-
-    I.add(H.sheet, {
-      tooltip: () => {
-        if (this.sheetState === 'bed') return { title: 'Federstahlblech (Textured PEI)', hint: fw.printing ? 'Während des Drucks nicht abnehmen' : 'Klicken zum Abnehmen' };
-        if (this.sheetState === 'bench') return this.vis.isEmpty ? { title: 'Federstahlblech', hint: 'Klicken, um es wieder aufs Heizbett zu legen' } : { title: 'Blech mit fertigem Druck', hint: 'Klicken: Blech biegen und Druck ablösen' };
-        return null;
-      },
-      onClick: () => this.onSheetClick()
-    });
-
-    I.add(H.spool, {
-      tooltip: () => {
-        const ins = fw.filament.inSensor || fw.filament.loaded;
-        return { title: this.spool.name, hint: ins ? (fw.filament.loaded ? 'Filament ist im Extruder geladen' : 'Filament steckt im Sensor') : fw.powered ? 'Klicken: Filamentende in den Nextruder einführen' : 'Drucker ist aus' };
-      },
-      onClick: () => this.insertFilament()
-    });
-
-    const tipTarget = this.H.carriage;
-    I.add(tipTarget, {
-      tooltip: () => ({
-        title: 'Nextruder',
-        hint: `Düse ${fw.nozzle.displayTemp.toFixed(0)} °C${fw.nozzle.temp > 50 ? ' – Vorsicht, heiß!' : ''} · Klicken: Düse antippen (Wägezelle)`
-      }),
+    I.add(H.carriage, {
       onClick: () => {
         this.loadcell = 1400;
         this.app.audio.click(this.sfxPos(H.nozzleTip), 0.15, 900, 0.03);
@@ -423,36 +530,14 @@ export class PrusaMK4S extends BaseDevice {
     return false;
   }
 
-  toggleUsb() {
-    const H = this.H;
-    this.usb.inserted = !this.usb.inserted;
-    this.stickAnim = { t: 0, from: H.usbStick.position.x, to: this.usb.inserted ? 88.4 : 150 };
-    this.app.audio.click(this.sfxPos(H.usbStick), 0.2, 1800, 0.03);
-    this.lcd.dirty = true;
-    this.panelDirty = true;
-    if (!this.usb.inserted && this.fw.mode === 'printing') {
-      this.fw.pause();
-      this.lcd.info('usbRemoved', 'warning');
-      this.sound('error');
-    }
-  }
-
   insertFilament() {
     const fw = this.fw;
-    if (!fw.powered) {
-      this.app.toast('Der Drucker ist ausgeschaltet.', 'warn');
-      return;
-    }
-    if (fw.filament.inSensor || fw.filament.loaded) return;
-    if (!this.spool) return;
-    if (!fw.settings.fsensor && !(fw.wizard && fw.wizard.kind === 'insert')) {
-      this.app.toast('Filamentsensor ist deaktiviert.', 'warn');
-    }
+    if (fw.filament.inSensor || fw.filament.loaded || this.spoolAnim) return;
     fw.filament.inSensor = true;
     this.lastFilamentKey = '';
     this.app.audio.click(this.sfxPos(this.H.nozzleTip), 0.2, 1200, 0.04);
     // autoload: printer asks which material to load
-    if (!fw.task && !fw.printing && !(fw.wizard && fw.wizard.kind === 'insert')) {
+    if (fw.powered && fw.mode === 'idle' && fw.settings.fsensor && !fw.task && !(fw.wizard && fw.wizard.kind === 'insert')) {
       this.lcd.push(this.lcd.materialPicker((m) => fw.startTask(fw.taskLoad(m), 'load')));
       const idx = this.lcd.top.items.findIndex((it) => it.label === this.spool.type);
       if (idx > 0) this.lcd.top.sel = idx;
@@ -465,7 +550,8 @@ export class PrusaMK4S extends BaseDevice {
     if (this.sheetAnim) return;
     if (this.sheetState === 'bed') {
       if (fw.printing || !fw.planner.idle) {
-        this.app.toast('Das Blech kann während der Druckkopf arbeitet nicht abgenommen werden.', 'warn');
+        // the magnets hold it, and the nozzle is busy – nothing happens
+        this.app.audio.thunk(this.sfxPos(this.H.sheet), 0.15, 120, 0.06);
         return;
       }
       this.removeSheet();
@@ -533,7 +619,7 @@ export class PrusaMK4S extends BaseDevice {
     holder.add(g);
     g.position.set(-c.x, 0, -c.z);
     const idx = this.finished.length;
-    holder.position.set(-430 - (idx % 3) * 95, 1, 200 - Math.floor(idx / 3) * 90);
+    holder.position.set(330 + (idx % 3) * 90, 1, -50 - Math.floor(idx / 3) * 90);
     holder.rotation.y = (Math.random() - 0.5) * 0.6;
     // invisible pick proxy (layer 1: raycast only, never rendered)
     const size = b.getSize(new THREE.Vector3());
@@ -543,14 +629,10 @@ export class PrusaMK4S extends BaseDevice {
     holder.add(proxy);
     this.root.add(holder);
     this.finished.push(holder);
-    this.app.interaction.add(holder, {
-      tooltip: { title: 'Fertiger Druck', hint: 'Klicken zum Wegräumen' },
-      onClick: () => this.removeFinished(holder)
-    });
+    this.app.interaction.add(holder, { onClick: () => this.removeFinished(holder) });
+    if (this.finished.length > 6) this.removeFinished(this.finished[0]);
     this.flexAnim = { t: 0 };
     this.app.audio.click(this.sfxPos(this.H.sheet), 0.35, 700, 0.06);
-    this.app.toast('Druck abgelöst und auf der Werkbank abgelegt. Klicke das Blech an, um es zurückzulegen.', 'ok');
-    this.panelDirty = true;
   }
 
   removeFinished(holder) {
@@ -558,7 +640,6 @@ export class PrusaMK4S extends BaseDevice {
     holder.parent?.remove(holder);
     holder.traverse((o) => o.isInstancedMesh && o.dispose());
     this.finished = this.finished.filter((f) => f !== holder);
-    this.panelDirty = true;
   }
 
   // ------------------------------------------------------------ audio
@@ -623,15 +704,7 @@ export class PrusaMK4S extends BaseDevice {
     H.screenMat.emissiveIntensity = fw.powered ? 0.95 : 0;
     if (this.lcd.render(realDt)) this.screenTex.needsUpdate = true;
 
-    // USB stick animation
-    if (this.stickAnim) {
-      const s = this.stickAnim;
-      s.t = Math.min(1, s.t + realDt * 2.5);
-      const k = s.t * s.t * (3 - 2 * s.t);
-      H.usbStick.position.x = s.from + (s.to - s.from) * k;
-      H.usbStick.position.y = -14 + Math.sin(k * Math.PI) * 6 + (this.usb.inserted ? 0 : k * -30);
-      if (s.t >= 1) this.stickAnim = null;
-    }
+    this.updateSpoolAnim(realDt);
 
     // sheet animation
     if (this.sheetAnim) {
@@ -661,253 +734,4 @@ export class PrusaMK4S extends BaseDevice {
 
     this.updateAudio();
   }
-
-  // ------------------------------------------------------------ status/HUD
-  status() {
-    const fw = this.fw;
-    if (!fw.powered) return { state: 'off', text: 'Aus' };
-    if (fw.mode === 'boot') return { state: 'busy', text: 'Startet …' };
-    if (fw.mode === 'printing' || fw.mode === 'resuming') return { state: 'busy', text: `Druckt ${Math.floor(fw.progress)}% · ${fmtShort(fw.remaining)}` };
-    if (fw.mode === 'paused' || fw.mode === 'pausing') return { state: 'warn', text: 'Pausiert' };
-    if (fw.mode === 'finished') return { state: 'on', text: 'Druck fertig ✓' };
-    if (fw.mode === 'stopped' || fw.mode === 'stopping') return { state: 'warn', text: 'Gestoppt' };
-    if (fw.task) return { state: 'busy', text: 'Beschäftigt …' };
-    if (fw.nozzle.heatingUp() || fw.bed.heatingUp()) return { state: 'busy', text: `Heizt ${Math.round(fw.nozzle.temp)}°/${Math.round(fw.bed.temp)}°` };
-    return { state: 'on', text: 'Bereit' };
-  }
-
-  buildPanel(el) {
-    this.panelEl = el;
-    const fw = this.fw;
-    el.innerHTML = '';
-
-    // --- state
-    this.kv = h('dl', { class: 'kv' });
-    el.appendChild(h('div', { class: 'section' }, h('h4', {}, 'Zustand'), this.kv));
-
-    // --- hint
-    el.appendChild(
-      h(
-        'div',
-        { class: 'section' },
-        h('div', {
-          class: 'hint',
-          html: 'Einschalten: <b>Netzschalter</b> hinten rechts am Netzteil (Kamera „Netzteil (hinten)“). Bedienen nur über das <b>Display mit Drehknopf</b> vorne links. Druckdateien liegen auf dem <b>USB-Stick</b> am Display.'
-        })
-      )
-    );
-
-    // --- USB
-    const usbSec = h('div', { class: 'section' });
-    this.usbList = h('ul', { class: 'file-list' });
-    const fileInput = h('input', { type: 'file', accept: '.gcode,.bgcode,.stl,.gco,.g', multiple: true, style: 'display:none' });
-    fileInput.addEventListener('change', () => {
-      for (const f of fileInput.files) this.importFile(f);
-      fileInput.value = '';
-    });
-    this.sliceBox = h('div');
-    usbSec.append(
-      h('h4', {}, 'USB-Stick'),
-      h('p', {}, 'Wie am PC: Lege G-Code (.gcode / .bgcode aus PrusaSlicer für MK4/MK4S) oder ein STL-Modell auf den Stick. STL-Dateien werden mit dem eingebauten Slicer vorbereitet.'),
-      this.usbList,
-      h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'btn primary', onclick: () => fileInput.click() }, 'Datei auf Stick kopieren …'), h('button', { class: 'btn', onclick: () => this.toggleUsb() }, 'Stick ab/an')),
-      this.sliceBox,
-      fileInput
-    );
-    el.appendChild(usbSec);
-
-    // --- spools
-    const spoolSec = h('div', { class: 'section' });
-    this.spoolGrid = h('div', { class: 'swatches' });
-    spoolSec.append(
-      h('h4', {}, 'Filament-Regal'),
-      h('p', {}, 'Spule tauschen geht nur, wenn kein Filament im Extruder steckt (Display → Filament → Entladen). Danach Spule anklicken, um das Ende einzuführen.'),
-      this.spoolGrid
-    );
-    el.appendChild(spoolSec);
-
-    // --- finished prints
-    this.finishedSec = h('div', { class: 'section' });
-    el.appendChild(this.finishedSec);
-
-    this.renderPanelParts();
-  }
-
-  renderPanelParts() {
-    const fw = this.fw;
-    if (!this.panelEl) return;
-    // USB list
-    this.usbList.innerHTML = '';
-    if (!this.usb.files.length) this.usbList.appendChild(h('li', { class: 'file-item' }, h('span', { class: 'fname' }, 'Beispieldateien werden gesliced …')));
-    for (const f of this.usb.files) {
-      const meta = [f.meta?.time ? fmtShort(f.meta.time) : null, f.meta?.material].filter(Boolean).join(' · ');
-      this.usbList.appendChild(
-        h(
-          'li',
-          { class: 'file-item' },
-          h('span', { class: 'fname', title: f.name }, f.name),
-          h('span', { class: 'fmeta' }, meta),
-          f.source === 'sample' ? null : h('button', { class: 'btn', title: 'Vom Stick löschen', onclick: () => { if (fw.job?.file === f) return this.app.toast('Datei wird gerade gedruckt.', 'warn'); this.usb.remove(f); this.renderPanelParts(); this.lcd.dirty = true; } }, '×')
-        )
-      );
-    }
-    // spools
-    this.spoolGrid.innerHTML = '';
-    const locked = fw.filament.inSensor || fw.filament.loaded;
-    for (const s of SPOOLS) {
-      const b = h(
-        'button',
-        { class: `swatch${s === this.spool ? ' active' : ''}`, disabled: locked && s !== this.spool, title: s.name },
-        h('span', { class: 'chip', style: `background:${s.color}` }),
-        h('span', {}, s.name.replace('Prusament ', '')),
-        h('span', { class: 'sw-sub' }, `${s.type} · 1 kg`)
-      );
-      b.addEventListener('click', () => {
-        if (s === this.spool) return;
-        if (fw.filament.inSensor || fw.filament.loaded) return this.app.toast('Erst Filament entladen (Display → Filament → Filament entladen).', 'warn');
-        this.spool = s;
-        this.applySpool();
-        this.app.audio.thunk(this.sfxPos(this.H.spool), 0.2, 160, 0.1);
-        this.renderPanelParts();
-      });
-      this.spoolGrid.appendChild(b);
-    }
-    // finished prints
-    this.finishedSec.innerHTML = '';
-    this.finishedSec.append(
-      h('h4', {}, 'Fertige Drucke'),
-      h('p', {}, this.finished.length ? `${this.finished.length} Teil(e) liegen links neben dem Drucker auf der Werkbank.` : 'Noch keine. Nach dem Druck: Blech abnehmen und anklicken, um das Teil abzulösen.'),
-      this.finished.length ? h('button', { class: 'btn', onclick: () => { [...this.finished].forEach((f) => this.removeFinished(f)); this.renderPanelParts(); } }, 'Alle wegräumen') : null
-    );
-    this.lastPanelLocked = locked;
-  }
-
-  refreshPanel() {
-    if (!this.panelEl || !this.kv) return;
-    const fw = this.fw;
-    const st = this.status();
-    const p = fw.planner.position(this.machinePos);
-    const rows = [
-      ['Status', st.text],
-      ['Düse', `${fw.nozzle.displayTemp.toFixed(1)} / ${fw.nozzle.target.toFixed(0)} °C`],
-      ['Heizbett', `${fw.bed.displayTemp.toFixed(1)} / ${fw.bed.target.toFixed(0)} °C`],
-      ['Filament', fw.filament.loaded ? `${materialById(fw.filament.type).id} geladen` : fw.filament.inSensor ? 'im Sensor' : 'nicht geladen'],
-      ['Spule', this.spool.name.replace('Prusament ', '')],
-      ['Position', `X${p[0].toFixed(1)} Y${p[1].toFixed(1)} Z${p[2].toFixed(2)}`]
-    ];
-    this.kv.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
-    const locked = fw.filament.inSensor || fw.filament.loaded;
-    if (this.panelDirty || locked !== this.lastPanelLocked) {
-      this.panelDirty = false;
-      this.renderPanelParts();
-    }
-  }
-
-  // ------------------------------------------------------------ import
-  async importFile(file) {
-    const lower = file.name.toLowerCase();
-    try {
-      if (lower.endsWith('.stl')) {
-        this.showSliceDialog(file);
-        return;
-      }
-      if (!/\.(gcode|bgcode|gco|g)$/.test(lower)) {
-        this.app.toast('Nur .gcode, .bgcode oder .stl werden unterstützt.', 'warn');
-        return;
-      }
-      if (file.size > 150e6) {
-        this.app.toast('Datei ist zu groß (max. 150 MB).', 'warn');
-        return;
-      }
-      const f = await loadUserFile(file);
-      this.usb.add(f);
-      this.lcd.dirty = true;
-      this.renderPanelParts();
-      this.app.toast(`<b>${f.name}</b> liegt jetzt auf dem USB-Stick.`, 'ok');
-    } catch (e) {
-      console.error(e);
-      this.app.toast(`Datei konnte nicht gelesen werden: ${e.message}`, 'err');
-    }
-  }
-
-  showSliceDialog(file) {
-    const box = this.sliceBox;
-    box.innerHTML = '';
-    const sel = (opts, val) => {
-      const s = h('select', {});
-      for (const o of opts) s.appendChild(h('option', { value: o, selected: o === val }, o));
-      return s;
-    };
-    const prof = sel(Object.keys(PROFILES), '0.20mm SPEED');
-    const mat = sel(Object.keys(FILAMENTS), this.spool.type in FILAMENTS ? this.spool.type : 'PLA');
-    const infill = h('input', { type: 'range', min: 0, max: 100, step: 5, value: 15 });
-    const infillLbl = h('span', {}, '15 %');
-    infill.addEventListener('input', () => (infillLbl.textContent = `${infill.value} %`));
-    const per = sel(['1', '2', '3', '4'], '2');
-    const vase = h('input', { type: 'checkbox' });
-    const scale = h('input', { type: 'number', min: 1, max: 1000, value: 100, step: 1 });
-    const prog = h('div', { class: 'loader-bar', style: 'margin-top:8px;display:none' }, h('div', { style: 'height:100%;width:0%;background:var(--accent);transition:width .2s' }));
-    const go = h('button', { class: 'btn primary block', style: 'margin-top:10px' }, 'Slicen & auf Stick speichern');
-    box.append(
-      h(
-        'div',
-        { class: 'hint', style: 'margin-top:10px' },
-        h('b', {}, `STL slicen: ${file.name}`),
-        h('label', { class: 'field' }, 'Druckprofil', prof),
-        h('label', { class: 'field' }, 'Material', mat),
-        h('label', { class: 'field' }, h('span', {}, 'Infill ', infillLbl), infill),
-        h('label', { class: 'field' }, 'Perimeter', per),
-        h('label', { class: 'field' }, 'Skalierung (%)', scale),
-        h('label', { class: 'field', style: 'flex-direction:row;align-items:center;gap:8px' }, vase, 'Spiralvasen-Modus'),
-        go,
-        prog
-      )
-    );
-    go.addEventListener('click', async () => {
-      go.disabled = true;
-      prog.style.display = 'block';
-      try {
-        const buf = await file.arrayBuffer();
-        const geo = new STLLoader().parse(buf);
-        const sc = Math.max(0.01, parseFloat(scale.value) / 100);
-        geo.scale(sc, sc, sc);
-        const placed = placeZUp(geo);
-        const bb = placed.boundingBox;
-        const size = bb.getSize(new THREE.Vector3());
-        if (size.x > 250 || size.y > 210 || size.z > 220) {
-          this.app.toast(`Modell ist zu groß für den Bauraum (${size.x.toFixed(0)}×${size.y.toFixed(0)}×${size.z.toFixed(0)} mm). Bitte skalieren.`, 'warn', 6000);
-          go.disabled = false;
-          return;
-        }
-        const positions = placed.attributes.position.array;
-        const name = file.name.replace(/\.stl$/i, '') + `_${prof.value.split(' ')[0]}_${mat.value}_MK4S.gcode`;
-        const f = await this.slicer.makeFile(
-          name,
-          positions,
-          { profile: prof.value, material: mat.value, infill: parseInt(infill.value, 10) / 100, perimeters: parseInt(per.value, 10), vase: vase.checked },
-          (p) => (prog.firstChild.style.width = `${Math.round(p * 100)}%`),
-          parseInt(this.spool.color.slice(1), 16)
-        );
-        f.source = 'user';
-        this.usb.add(f);
-        this.lcd.dirty = true;
-        box.innerHTML = '';
-        this.renderPanelParts();
-        this.app.toast(`<b>${name}</b> gesliced (${fmtShort(f.meta.time)}, ${f.meta.filamentG.toFixed(1)} g) und auf den Stick kopiert.`, 'ok', 6000);
-      } catch (e) {
-        console.error(e);
-        this.app.toast(`Slicen fehlgeschlagen: ${e.message}`, 'err');
-        go.disabled = false;
-      }
-    });
-  }
-}
-
-function fmtShort(s) {
-  s = Math.max(0, Math.round(s || 0));
-  const hh = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  if (hh) return `${hh} h ${m} min`;
-  if (m) return `${m} min`;
-  return `${s} s`;
 }

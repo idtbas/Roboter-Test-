@@ -9,7 +9,7 @@ export const BENCH_W = 3800;
 export const WALL_Z = -900;
 
 // Builds the room, the workbench and the lighting. Returns slot positions.
-export function buildWorkshop(scene, engine, M) {
+export function buildWorkshop(scene, engine, M, app) {
   const root = group('workshop');
   scene.add(root);
 
@@ -175,8 +175,95 @@ export function buildWorkshop(scene, engine, M) {
   const hemi = new THREE.HemisphereLight(0xf2efe8, 0x3a3631, 0.25);
   root.add(hemi);
 
+  // ---------------- Workshop manual on the pegboard ----------------
+  const manualTex = paperTexture(1000, 1414, 'Werkstatt – Kurzanleitung', [
+    { h: 'Umsehen', lines: ['• Linke Maustaste ziehen: drehen · rechte Maustaste: verschieben · Mausrad: zoomen', '• Doppelklick auf ein Gerät oder Teil: hingehen · Esc: zurück zur Übersicht', '• Alles, was beim Überfahren aufleuchtet, kannst du anfassen (anklicken).', '• Tastatur gehört dem zuletzt angeklickten Gerät. M: Ton an/aus.'] },
+    { h: 'Zeit', lines: ['• Alles läuft in Echtzeit. Die Uhr an der Lochwand anklicken (oder am Mausrad drehen), um die Zeit schneller laufen zu lassen.'] },
+    { h: 'USB-Sticks', lines: ['• Stick anklicken = in die Hand nehmen. Dann in einen USB-Anschluss stecken (Drucker oder Laptop) oder irgendwo ablegen. Esc = zurück.'] },
+    { h: 'Original Prusa MK4S (links)', lines: ['• Netzschalter: hinten rechts am Netzteil.', '• Bedienung: Display mit Drehknopf (Mausrad / ziehen, Klick = drücken, oder Pfeiltasten + Enter).', '• Filament wechseln: erst entladen, dann eine Spule im Regal anklicken.'] },
+    { h: 'Ortur Laser Master 3 (Mitte)', lines: ['• Netztaster, Schlüssel und Not-Aus: Bedienfeld vorne rechts.', '• Gesteuert wird er am Laptop mit LaserWerk (Verbinden → Home → Rahmen → Start).', '• Material vom Stapel links auflegen. Fokus: Lasermodul anklicken. Schutzbrille liegt vor dem Laser!'] },
+    { h: 'ELEGOO Mars 4 (rechts)', lines: ['• Netzschalter hinten. Bedienung über den Touchscreen.', '• Haube abnehmen, Resin aus einer Flasche eingießen, Haube wieder drauf.'] },
+    { h: 'Laptop', lines: ['• LaserWerk: Laser steuern · SliceWerk: eigene Modelle für Prusa und Mars slicen · Dateien: auf USB-Stick kopieren.'] }
+  ]);
+  const manual = new THREE.Mesh(new THREE.PlaneGeometry(210, 297), new THREE.MeshStandardMaterial({ map: manualTex, roughness: 0.85 }));
+  manual.position.set(MANUAL.x, MANUAL.y, WALL_Z + 32 + 7.2);
+  manual.receiveShadow = true;
+  root.add(manual);
+
+  // ---------------- Wall clock = simulation speed ----------------
+  const clock = group('clock', { x: -560, y: BENCH_TOP + 760, z: WALL_Z + 34 });
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(140, 9, 16, 64), new THREE.MeshPhysicalMaterial({ color: 0x1d1e21, roughness: 0.35, clearcoat: 0.5 }));
+  clock.add(rim);
+  clock.add(cyl(140, 10, new THREE.MeshStandardMaterial({ color: 0x2a2b2e }), { z: -6, rx: Math.PI / 2 }, 64));
+  let speedShown = 1;
+  const faceMat = new THREE.MeshStandardMaterial({ map: clockFaceTexture(1), roughness: 0.7 });
+  const face = new THREE.Mesh(new THREE.CircleGeometry(136, 64), faceMat);
+  face.position.z = 0.5;
+  clock.add(face);
+  clock.add(new THREE.Mesh(new THREE.CircleGeometry(138, 64), new THREE.MeshPhysicalMaterial({ color: 0xffffff, transparent: true, opacity: 0.08, roughness: 0.02, clearcoat: 1 })).translateZ(9));
+  const handMat = new THREE.MeshStandardMaterial({ color: 0x141518, roughness: 0.5 });
+  const mkHand = (len, wdt, z, mat = handMat) => {
+    const piv = new THREE.Group();
+    const m = new THREE.Mesh(new THREE.BoxGeometry(wdt, len, 1.5), mat);
+    m.position.y = len / 2 - 14;
+    m.castShadow = true;
+    piv.add(m);
+    piv.position.z = z;
+    clock.add(piv);
+    return piv;
+  };
+  const hHand = mkHand(80, 9, 2);
+  const mHand = mkHand(118, 6, 3.5);
+  const sHand = mkHand(126, 2, 5, new THREE.MeshStandardMaterial({ color: 0xd4471b }));
+  clock.add(cyl(6, 8, handMat, { z: 6, rx: Math.PI / 2 }, 20));
+  root.add(clock);
+  if (app) {
+    app.interaction.add(clock, {
+      onClick: () => {
+        app.cycleSpeed(1);
+        app.audio.click(clock.getWorldPosition(new THREE.Vector3()), 0.2, 2200, 0.02);
+      },
+      onWheel: (steps) => {
+        app.cycleSpeed(steps < 0 ? 1 : -1);
+        app.audio.click(clock.getWorldPosition(new THREE.Vector3()), 0.15, 2600, 0.015);
+        return true;
+      }
+    });
+  }
+  const t0 = Date.now();
+
+  const views = {
+    manual: { pos: new THREE.Vector3(MANUAL.x, MANUAL.y - 6, WALL_Z + 560), target: new THREE.Vector3(MANUAL.x, MANUAL.y - 6, WALL_Z + 30), minDistance: 120 },
+    clock: { pos: new THREE.Vector3(-560, BENCH_TOP + 740, WALL_Z + 760), target: new THREE.Vector3(-560, BENCH_TOP + 760, WALL_Z + 30) }
+  };
+
   return {
     root,
+    views,
+    focusViewFor(obj) {
+      let o = obj;
+      while (o) {
+        if (o === manual) return views.manual;
+        if (o === clock) return views.clock;
+        o = o.parent;
+      }
+      return null;
+    },
+    update() {
+      if (!app) return;
+      if (app.simSpeed !== speedShown) {
+        speedShown = app.simSpeed;
+        faceMat.map.dispose();
+        faceMat.map = clockFaceTexture(speedShown);
+      }
+      const d = new Date(t0 + app.simTime * 1000);
+      const sec = d.getSeconds() + d.getMilliseconds() / 1000;
+      const min = d.getMinutes() + sec / 60;
+      const hr = (d.getHours() % 12) + min / 60;
+      sHand.rotation.z = -(sec / 60) * Math.PI * 2;
+      mHand.rotation.z = -(min / 60) * Math.PI * 2;
+      hHand.rotation.z = -(hr / 12) * Math.PI * 2;
+    },
     slots: {
       prusa: new THREE.Vector3(-1250, BENCH_TOP, BENCH_Z + 30),
       ortur: new THREE.Vector3(-60, BENCH_TOP, BENCH_Z + 20),
@@ -224,10 +311,145 @@ function addPegTools(g, M) {
   sp.add(rbox(28, 110, 18, 8, handleOrange, { y: 40 }));
   sp.add(box(40, 80, 0.8, M.steel, { y: -40 }));
   g.add(sp);
-  // clipboard with a print settings sheet
-  const paper = new THREE.MeshStandardMaterial({ color: 0xf3f1ea, roughness: 0.9 });
-  g.add(box(230, 310, 4, new THREE.MeshStandardMaterial({ color: 0x6b5236, roughness: 0.8 }), { x: 260, y: y0 + 480, z: z + 4 }));
-  g.add(box(210, 280, 1, paper, { x: 260, y: y0 + 470, z: z + 7 }));
-  for (let i = 0; i < 12; i++) g.add(box(150 - (i % 3) * 30, 3, 0.5, M.plasticGrey, { x: 250 - (i % 3) * 15, y: y0 + 580 - i * 18, z: z + 8 }));
-  g.add(box(70, 14, 10, M.steel, { x: 260, y: y0 + 630, z: z + 9 }));
+  // clipboard (the manual sheet itself is added separately with its texture)
+  g.add(box(232, 330, 4, new THREE.MeshStandardMaterial({ color: 0x6b5236, roughness: 0.8 }), { x: MANUAL.x, y: MANUAL.y + 6, z: z + 4 }));
+  g.add(box(80, 16, 10, M.steel, { x: MANUAL.x, y: MANUAL.y + 158, z: z + 10 }));
+}
+
+const MANUAL = { x: 260, y: BENCH_TOP + 120 + 470 };
+
+// ---------------------------------------------------------------------------
+// Printed paper (manual sheet, quick guide cards) – canvas texture
+// ---------------------------------------------------------------------------
+export function paperTexture(pxW, pxH, title, blocks, { accent = '#fa6831', subtitle = '' } = {}) {
+  const c = document.createElement('canvas');
+  c.width = pxW;
+  c.height = pxH;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#f4f2ec';
+  ctx.fillRect(0, 0, pxW, pxH);
+  // faint paper grain
+  for (let i = 0; i < 1400; i++) {
+    ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.025})`;
+    ctx.fillRect(Math.random() * pxW, Math.random() * pxH, 1.5, 1.5);
+  }
+  const m = pxW * 0.07;
+  const s = pxW / 1000;
+  ctx.fillStyle = accent;
+  ctx.fillRect(m, m, pxW - 2 * m, 8 * s);
+  ctx.fillStyle = '#16181b';
+  ctx.font = `800 ${46 * s}px Inter, Arial, sans-serif`;
+  ctx.textBaseline = 'top';
+  ctx.fillText(title, m, m + 26 * s);
+  let y = m + 92 * s;
+  if (subtitle) {
+    ctx.fillStyle = '#555';
+    ctx.font = `500 ${24 * s}px Inter, Arial, sans-serif`;
+    ctx.fillText(subtitle, m, y - 18 * s);
+    y += 22 * s;
+  }
+  const maxW = pxW - 2 * m;
+  const wrap = (text, font, lh, color, indent = 0) => {
+    ctx.font = font;
+    ctx.fillStyle = color;
+    const words = text.split(' ');
+    let line = '';
+    for (const w of words) {
+      const t = line ? `${line} ${w}` : w;
+      if (ctx.measureText(t).width > maxW - indent && line) {
+        ctx.fillText(line, m + indent, y);
+        y += lh;
+        line = w;
+      } else line = t;
+    }
+    if (line) {
+      ctx.fillText(line, m + indent, y);
+      y += lh;
+    }
+  };
+  for (const b of blocks) {
+    if (b.h) {
+      y += 14 * s;
+      ctx.fillStyle = accent;
+      ctx.fillRect(m, y + 6 * s, 6 * s, 26 * s);
+      wrap(b.h, `700 ${30 * s}px Inter, Arial, sans-serif`, 40 * s, '#16181b', 16 * s);
+      y += 4 * s;
+    }
+    for (const l of b.lines || []) {
+      const bullet = l.startsWith('• ');
+      if (bullet) {
+        ctx.fillStyle = '#333';
+        ctx.beginPath();
+        ctx.arc(m + 8 * s, y + 14 * s, 4 * s, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      wrap(bullet ? l.slice(2) : l, `400 ${25 * s}px Inter, Arial, sans-serif`, 34 * s, '#26282c', bullet ? 24 * s : 0);
+      y += 4 * s;
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+// Tent card standing on the bench (quick guide next to a device)
+export function guideCard(title, blocks, { w = 170, h = 120, accent } = {}) {
+  const g = new THREE.Group();
+  g.name = 'guide-card';
+  const tex = paperTexture(1000, Math.round((1000 * h) / w), title, blocks, { accent });
+  const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85 });
+  const front = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+  const tilt = 0.32;
+  front.position.set(0, (h / 2) * Math.cos(tilt), (h / 2) * Math.sin(tilt) * 0 + 0.5);
+  front.rotation.x = -tilt;
+  front.castShadow = true;
+  front.receiveShadow = true;
+  g.add(front);
+  // back leg
+  const back = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshStandardMaterial({ color: 0xe9e6de, roughness: 0.9, side: THREE.DoubleSide }));
+  back.position.set(0, (h / 2) * Math.cos(tilt), -h * Math.sin(tilt));
+  back.rotation.x = tilt;
+  back.castShadow = true;
+  g.add(back);
+  g.userData.card = front;
+  return g;
+}
+
+function clockFaceTexture(speed) {
+  const S = 512;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#f7f6f2';
+  ctx.beginPath();
+  ctx.arc(S / 2, S / 2, S / 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.translate(S / 2, S / 2);
+  for (let i = 0; i < 60; i++) {
+    const a = (i / 60) * Math.PI * 2;
+    const big = i % 5 === 0;
+    ctx.fillStyle = '#1b1c1f';
+    ctx.save();
+    ctx.rotate(a);
+    ctx.fillRect(-(big ? 5 : 2), -S / 2 + 18, big ? 10 : 4, big ? 36 : 16);
+    ctx.restore();
+  }
+  ctx.font = '700 46px Inter, Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (let h = 1; h <= 12; h++) {
+    const a = (h / 12) * Math.PI * 2;
+    ctx.fillText(String(h), Math.sin(a) * 168, -Math.cos(a) * 168);
+  }
+  ctx.fillStyle = speed === 1 ? '#3a3c40' : '#d4471b';
+  ctx.font = '800 30px Inter, Arial';
+  ctx.fillText(speed === 1 ? 'ECHTZEIT' : `${speed}× SCHNELLER`, 0, 92);
+  ctx.fillStyle = '#8a8c90';
+  ctx.font = '600 20px Inter, Arial';
+  ctx.fillText('WERKSTATT-ZEIT', 0, -92);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
 }

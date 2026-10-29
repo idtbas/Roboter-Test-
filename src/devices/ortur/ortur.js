@@ -1,11 +1,12 @@
 import * as THREE from 'three';
-import { BaseDevice, h } from '../base.js';
+import { BaseDevice } from '../base.js';
 import { buildOrturModel, buildLaptop, LGEO } from './model.js';
 import { Grbl } from './grbl.js';
-import { LaserApp } from './laserapp.js';
+import { LaptopOS, SCREEN_W, SCREEN_H } from '../../laptop/os.js';
 import { LASER_MATERIALS, Workpiece, Smoke } from './burn.js';
 import { MotorVoice, FanVoice, HumVoice } from '../../core/audio.js';
-import { tube } from '../../core/parts.js';
+import { tube, box, rbox, group } from '../../core/parts.js';
+import { guideCard } from '../../core/workshop.js';
 
 const MAX_W = 10; // optical watts (LU2-10A)
 
@@ -44,11 +45,12 @@ export class OrturLM3 extends BaseDevice {
     this.mpos = new Float64Array(3);
     this.prevPos = new Float64Array(3);
     this.tmp = new THREE.Vector3();
-    this.laserApp = new LaserApp(this);
+    this.os = new LaptopOS(app, this);
+    this.laserApp = this.os.laser;
     this.laserPowerNow = 0;
 
     // laptop screen texture
-    this.screenTex = new THREE.CanvasTexture(this.laserApp.ui.canvas);
+    this.screenTex = new THREE.CanvasTexture(this.os.ui.canvas);
     this.screenTex.colorSpace = THREE.SRGBColorSpace;
     this.screenTex.anisotropy = 8;
     lap.screenMat.emissiveMap = this.screenTex;
@@ -60,6 +62,8 @@ export class OrturLM3 extends BaseDevice {
     this.setupInteractions();
     this.setupAudio();
     this.setupGlasses();
+    this.buildLaptopUsb();
+    this.buildGuide();
     this.placeMaterial(LASER_MATERIALS[0]);
     this.focusTo(LGEO.BED_TOP + LASER_MATERIALS[0].t + LGEO.FOCAL + 4); // slightly out of focus at start
 
@@ -70,10 +74,56 @@ export class OrturLM3 extends BaseDevice {
     this.view('head', 'Laserkopf', [90, 230, 330], [0, 60, 0], {
       follow: () => this.H.tip.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, 20, 0))
     });
-    this.view('controls', 'Bedienfeld', [330, 230, 470], [240, 40, 262], { minDistance: 80 });
+    this.view('controls', 'Bedienfeld', [330, 230, 470], [280, 40, 230], { minDistance: 80 });
     this.view('material', 'Material', [-10, 650, 200], [-10, 20, 30]);
+    this.view('stack', 'Materialstapel', [-460, 330, 480], [-460, 10, 30]);
+    this.view('guide', 'Kurzanleitung', [-190, 230, 560], [-190, 50, 360], { minDistance: 80 });
+    this.view('usb', 'Laptop-USB', [840, 200, 320], [760, 30, 120], { minDistance: 60 });
 
     this.updateMechanics();
+  }
+
+  viewById(id) {
+    return this.cameraViews.find((v) => v.id === id);
+  }
+
+  focusViewFor(obj) {
+    const inside = (g) => {
+      let o = obj;
+      while (o) {
+        if (o === g) return true;
+        o = o.parent;
+      }
+      return false;
+    };
+    if (inside(this.laptop.screen)) return this.viewById('laptop');
+    if (inside(this.laptop.group)) return this.viewById('laptop');
+    if (inside(this.H.ctrl) || inside(this.glassesGroup)) return this.viewById('controls');
+    if (inside(this.H.carriage)) return this.viewById('head');
+    if (inside(this.stack)) return this.viewById('stack');
+    if (inside(this.guide)) return this.viewById('guide');
+    if ((this.workpiece && inside(this.workpiece.mesh)) || inside(this.H.honeycomb)) return this.viewById('material');
+    return this.viewById('overview');
+  }
+
+  // ------------------------------------------------------------- laptop USB
+  buildLaptopUsb() {
+    this.laptopSocket = this.app.hand.addSocket({
+      anchor: this.laptop.usbSocket,
+      onInsert: (item) => this.os.setStick(item.data),
+      onRemove: () => this.os.setStick(null)
+    });
+  }
+
+  // ------------------------------------------------------------- quick guide
+  buildGuide() {
+    const card = guideCard('Ortur Laser Master 3', [
+      { lines: ['• Netztaster, Schlüssel und Not-Aus: Bedienfeld vorne rechts.', '• Gesteuert wird nur am Laptop: LaserWerk → Verbinden → Home.', '• Material vom Stapel links auflegen, Fokus: Lasermodul anklicken.', '• Schutzbrille aufsetzen (liegt vor dem Bedienfeld), Rahmen, Start.'] }
+    ], { w: 190, h: 120 });
+    card.position.set(-190, 0, 345);
+    card.rotation.y = 0.12;
+    this.root.add(card);
+    this.guide = card;
   }
 
   laptopCam() {
@@ -174,20 +224,13 @@ export class OrturLM3 extends BaseDevice {
       y += def.t + 0.2;
       this.stack.add(m);
       this.stackItems.push({ def, mesh: m });
-      this.app.interaction.add(m, {
-        tooltip: () => ({ title: def.name, hint: this.workpiece ? 'Erst das aufliegende Werkstück abnehmen' : 'Klicken: auf die Wabenplatte legen (vorne links anlegen)' }),
-        onClick: () => this.placeMaterial(def)
-      });
+      this.app.interaction.add(m, { onClick: () => this.placeMaterial(def) });
     });
   }
 
   placeMaterial(def) {
-    if (this.workpiece) {
-      this.app.toast('Auf der Wabenplatte liegt schon ein Werkstück.', 'warn');
-      return;
-    }
-    if (this.grbl.state === 'Run' || this.laserApp.job) {
-      this.app.toast('Nicht während der Laser arbeitet!', 'warn');
+    if (this.workpiece || this.grbl.state === 'Run' || this.laserApp.job) {
+      this.app.audio.thunk(this.sfxPos(this.stack), 0.15, 140, 0.06);
       return;
     }
     const X0 = 10;
@@ -196,21 +239,17 @@ export class OrturLM3 extends BaseDevice {
     wp.place((x) => this.mapX(x), (y) => this.mapZ(y));
     this.root.add(wp.mesh);
     this.workpiece = wp;
-    this.app.interaction.add(wp.mesh, {
-      tooltip: () => ({ title: `${def.name} (auf dem Lasertisch)`, hint: this.laserApp.job ? 'Laser arbeitet …' : 'Klicken: Werkstück abnehmen' }),
-      onClick: () => this.takeWorkpiece()
-    });
+    this.app.interaction.add(wp.mesh, { onClick: () => this.takeWorkpiece() });
     this.app.audio.thunk(this.sfxPos(wp.mesh), 0.18, 260, 0.06);
-    this.laserApp.ui.dirty = true;
+    this.os.ui.dirty = true;
     this.laserApp.estimateDirty = true;
-    this.panelDirty = true;
   }
 
   takeWorkpiece() {
     const wp = this.workpiece;
     if (!wp) return;
     if (this.laserApp.job || this.grbl.state === 'Run') {
-      this.app.toast('Erst den Auftrag beenden oder stoppen.', 'warn');
+      this.app.audio.thunk(this.sfxPos(wp.mesh), 0.15, 140, 0.06);
       return;
     }
     this.app.interaction.remove(wp.mesh);
@@ -221,18 +260,13 @@ export class OrturLM3 extends BaseDevice {
       wp.mesh.position.set(-460 + (idx % 2) * 30, wp.def.t / 2 + 1 + Math.floor(idx / 2) * 1, -170 + (idx % 3) * 20);
       wp.mesh.rotation.y = 0.3 - idx * 0.2;
       this.finished.push(wp);
-      this.app.interaction.add(wp.mesh, {
-        tooltip: { title: `Fertiges Werkstück: ${wp.def.name}`, hint: 'Klicken zum Wegräumen' },
-        onClick: () => this.removeFinished(wp)
-      });
+      this.app.interaction.add(wp.mesh, { onClick: () => this.removeFinished(wp) });
       if (this.finished.length > 4) this.removeFinished(this.finished[0]);
-      this.app.toast('Werkstück abgenommen und hinten links abgelegt.', 'ok');
     } else {
       this.root.remove(wp.mesh);
       wp.dispose();
     }
-    this.laserApp.ui.dirty = true;
-    this.panelDirty = true;
+    this.os.ui.dirty = true;
   }
 
   removeFinished(wp) {
@@ -240,7 +274,6 @@ export class OrturLM3 extends BaseDevice {
     this.root.remove(wp.mesh);
     wp.dispose();
     this.finished = this.finished.filter((f) => f !== wp);
-    this.panelDirty = true;
   }
 
   // ------------------------------------------------------------- interactions
@@ -248,7 +281,6 @@ export class OrturLM3 extends BaseDevice {
     const I = this.app.interaction;
     const H = this.H;
     I.add(H.powerBtn, {
-      tooltip: () => ({ title: `Netztaster (${this.grbl.powered ? 'EIN' : 'AUS'})`, hint: 'Klicken zum Ein-/Ausschalten' }),
       onClick: () => {
         const on = !this.grbl.powered;
         this.grbl.setPower(on);
@@ -256,18 +288,15 @@ export class OrturLM3 extends BaseDevice {
         H.powerCap.position.y = 2.4;
         setTimeout(() => (H.powerCap.position.y = 3.2), 150);
         this.app.audio.click(this.sfxPos(H.powerBtn), 0.3, 1800, 0.02);
-        if (on) this.app.toast('Laser Master 3 startet – danach in der Software verbinden.', 'info', 3000);
       }
     });
     I.add(H.keySwitch, {
-      tooltip: () => ({ title: `Schlüsselschalter (${this.keyOn ? 'Laser freigegeben' : 'Laser gesperrt'})`, hint: 'Klicken zum Drehen' }),
       onClick: () => {
         this.keyOn = !this.keyOn;
         this.app.audio.click(this.sfxPos(H.keySwitch), 0.3, 1400, 0.03);
       }
     });
     I.add(H.estop, {
-      tooltip: () => ({ title: `Not-Aus${this.estopPressed ? ' (GEDRÜCKT)' : ''}`, hint: this.estopPressed ? 'Klicken: herausdrehen zum Entriegeln' : 'Klicken: sofort alles stoppen' }),
       onClick: () => {
         this.estopPressed = !this.estopPressed;
         this.grbl.setEstop(this.estopPressed);
@@ -276,14 +305,6 @@ export class OrturLM3 extends BaseDevice {
       }
     });
     I.add(H.module, {
-      tooltip: () => {
-        const d = this.focusDelta();
-        const ok = Math.abs(d) < 0.6;
-        return {
-          title: 'Lasermodul LU2-10A',
-          hint: `Fokus: ${ok ? 'OK ✓' : `${d > 0 ? '+' : ''}${d.toFixed(1)} mm daneben`} · Mausrad = Höhe verstellen · Klick = Fokuslehre benutzen`
-        };
-      },
       onWheel: (steps) => {
         if (this.focusAnim) return true;
         this.focusTo(this.nozzleY - steps * 0.5);
@@ -293,34 +314,31 @@ export class OrturLM3 extends BaseDevice {
       },
       onClick: () => this.autoFocus()
     });
-    // laptop screen = touch/mouse surface
+    // laptop screen: mouse surface for the laptop OS
     const screen = this.laptop.screen;
-    const toPx = (hit) => (hit && hit.uv ? [hit.uv.x * 1280, (1 - hit.uv.y) * 800] : null);
+    const toPx = (hit) => (hit && hit.uv ? [hit.uv.x * SCREEN_W, (1 - hit.uv.y) * SCREEN_H] : null);
     const planeHit = (ray) => {
       // keep dragging even when leaving the screen: intersect the screen plane
-      const s = this.laptop.screen;
-      const n = new THREE.Vector3(0, 0, 1).transformDirection(s.matrixWorld);
-      const p = s.getWorldPosition(new THREE.Vector3());
+      const n = new THREE.Vector3(0, 0, 1).transformDirection(screen.matrixWorld);
+      const p = screen.getWorldPosition(new THREE.Vector3());
       const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, p);
       const hitP = new THREE.Vector3();
       if (!ray.intersectPlane(plane, hitP)) return null;
-      const local = s.worldToLocal(hitP);
-      return [(local.x / 296 + 0.5) * 1280, (0.5 - local.y / 185) * 800];
+      const local = screen.worldToLocal(hitP);
+      return [(local.x / 296 + 0.5) * SCREEN_W, (0.5 - local.y / 185) * SCREEN_H];
     };
     I.add(screen, {
       cursor: 'default',
       noHighlight: true,
-      tooltip: null,
       onDown: (hit) => {
         const p = toPx(hit);
-        if (p) this.laserApp.ui.pointerDown(p[0], p[1]);
-        this.laptopFocus = true;
+        if (p) this.os.pointerDown(p[0], p[1]);
         this.app.audio.unlock();
         return true;
       },
       onDrag: (hit, e, ray) => {
         const p = (hit && toPx(hit)) || planeHit(ray);
-        if (p) this.laserApp.ui.pointerMove(p[0], p[1]);
+        if (p) this.os.pointerMove(p[0], p[1]);
       },
       onUp: (hit, e) => {
         let p = toPx(hit);
@@ -330,15 +348,14 @@ export class OrturLM3 extends BaseDevice {
           I2.raycaster.setFromCamera(I2.pointer, this.app.engine.camera);
           p = planeHit(I2.raycaster.ray);
         }
-        if (p) this.laserApp.ui.pointerUp(p[0], p[1]);
-        else this.laserApp.ui.pointerUp(-1, -1);
+        this.os.pointerUp(p ? p[0] : -1, p ? p[1] : -1);
       },
       onHoverMove: (hit) => {
         const p = toPx(hit);
-        if (p) this.laserApp.ui.pointerMove(p[0], p[1]);
+        if (p) this.os.pointerMove(p[0], p[1]);
       },
       onWheel: (steps) => {
-        this.laserApp.ui.wheel(steps);
+        this.os.wheel(steps);
         return true;
       }
     });
@@ -347,7 +364,7 @@ export class OrturLM3 extends BaseDevice {
   autoFocus() {
     if (this.focusAnim) return;
     if (this.grbl.state === 'Run') {
-      this.app.toast('Nicht während des Laserns fokussieren!', 'warn');
+      this.app.audio.thunk(this.sfxPos(this.H.module), 0.15, 140, 0.06);
       return;
     }
     const target = this.surfaceY() + LGEO.FOCAL;
@@ -355,18 +372,20 @@ export class OrturLM3 extends BaseDevice {
     this.app.audio.click(this.sfxPos(this.H.module), 0.2, 1500, 0.03);
   }
 
-  onKey(e, down) {
-    if (!down) return false;
-    if (this.laptopFocus && this.app.currentView?.id === 'laptop') {
-      const used = this.laserApp.onKey(e);
-      if (used) this.laserApp.ui.dirty = true;
-      return used || this.laserApp.ui.focus !== null;
+  laptopHasFocus() {
+    let o = this.app.interaction.lastDownObject;
+    while (o) {
+      if (o === this.laptop.group) return true;
+      o = o.parent;
     }
     return false;
   }
 
-  onView(v) {
-    this.laptopFocus = v && v.id === 'laptop';
+  onKey(e, down) {
+    if (!down || !this.laptopHasFocus()) return false;
+    const used = this.os.onKey(e);
+    if (used) this.os.render(0, true);
+    return used;
   }
 
   // ------------------------------------------------------------- glasses
@@ -379,15 +398,38 @@ export class OrturLM3 extends BaseDevice {
       document.body.appendChild(el);
     }
     this.glassesEl = el;
+    // the glasses lie in an open case in front of the control box
+    const M = this.app.M;
+    const g = group('glasses-case', { x: 330, y: 0, z: 205, ry: -0.3 });
+    const caseMat = new THREE.MeshPhysicalMaterial({ color: 0x1d1f22, roughness: 0.75 });
+    g.add(rbox(176, 4, 70, 3, caseMat, { y: 2 }));
+    for (const sz of [-1, 1]) g.add(box(176, 22, 3, caseMat, { y: 11, z: sz * 33.5 }));
+    for (const sx of [-1, 1]) g.add(box(3, 22, 70, caseMat, { x: sx * 86.5, y: 11 }));
+    g.add(box(170, 1, 64, new THREE.MeshStandardMaterial({ color: 0x4a2a1a, roughness: 1 }), { y: 4.5 }));
+    // OD4+ goggles for 445 nm: orange lens, black frame, folded temples
+    const glasses = group('laser-glasses', { y: 5 });
+    const lensMat = new THREE.MeshPhysicalMaterial({ color: 0xff7a00, roughness: 0.06, transparent: true, opacity: 0.8, clearcoat: 1, emissive: 0x4a1800, emissiveIntensity: 0.35 });
+    const lens = rbox(144, 2.5, 44, 1, lensMat, { y: 14, z: 6, rx: -0.45 });
+    glasses.add(lens);
+    glasses.add(box(150, 6, 6, M.plasticBlack, { y: 23, z: -12, rx: -0.45 }));
+    glasses.add(box(8, 6, 14, M.plasticBlack, { y: 10, z: 10 }));
+    for (const [z, y] of [[-20, 4], [-26, 8]]) glasses.add(box(132, 3.5, 4, M.plasticBlack, { y, z }));
+    g.add(glasses);
+    this.root.add(g);
+    this.glassesGroup = g;
+    this.glassesMesh = glasses;
+    this.app.interaction.add(g, {
+      onClick: () => {
+        this.setGlasses(!this.glasses);
+        this.app.audio.click(this.sfxPos(g), 0.2, 1200, 0.04);
+      }
+    });
   }
 
   setGlasses(on) {
     this.glasses = on;
     this.glassesEl.style.display = on ? 'block' : 'none';
-  }
-
-  onDeactivate() {
-    if (this.glasses) this.setGlasses(false);
+    this.glassesMesh.visible = !on;
   }
 
   // ------------------------------------------------------------- audio
@@ -486,7 +528,7 @@ export class OrturLM3 extends BaseDevice {
         H.gaugeArm.rotation.z = Math.PI * 0.97;
         this.focusTo(f.to);
         this.focusAnim = null;
-        this.app.toast('Fokus eingestellt: Lehre berührt das Material, Modul festgezogen.', 'ok', 3000);
+        this.app.audio.click(this.sfxPos(this.H.module), 0.2, 2600, 0.02);
       }
     }
 
@@ -532,98 +574,18 @@ export class OrturLM3 extends BaseDevice {
     if (this.grbl.powered) H.moduleFan.rotation.z += realDt * 50;
 
     // laptop screen
-    if (this.laserApp.render(realDt)) this.screenTex.needsUpdate = true;
+    this.os.render(realDt);
+    if (this.os.needsUpload) {
+      this.os.needsUpload = false;
+      this.screenTex.needsUpdate = true;
+    }
     this.updateAudio();
   }
 
-  // ------------------------------------------------------------- HUD
-  status() {
-    const g = this.grbl;
-    if (!g.powered) return { state: 'off', text: 'Aus' };
-    if (this.estopPressed) return { state: 'err', text: 'NOT-AUS' };
-    const j = this.laserApp.job;
-    if (j && !j.frame) return { state: 'busy', text: `Lasert ${Math.floor((j.acked / Math.max(1, j.total)) * 100)}%` };
-    const st = g.state;
-    if (st === 'Alarm') return { state: 'warn', text: 'Gesperrt (Alarm)' };
-    if (st === 'Home') return { state: 'busy', text: 'Referenzfahrt' };
-    if (st === 'Run' || st === 'Jog') return { state: 'busy', text: 'Bewegt sich' };
-    if (st.startsWith('Hold')) return { state: 'warn', text: 'Pausiert' };
-    return { state: 'on', text: this.laserApp.connected ? 'Bereit (verbunden)' : 'Bereit' };
-  }
-
-  buildPanel(el) {
-    this.panelEl = el;
-    el.innerHTML = '';
-    this.kv = h('dl', { class: 'kv' });
-    el.appendChild(h('div', { class: 'section' }, h('h4', {}, 'Zustand'), this.kv));
-    el.appendChild(
-      h(
-        'div',
-        { class: 'section' },
-        h('div', {
-          class: 'hint',
-          html: 'Kein Display: Der Laser wird wie in echt <b>per USB vom Laptop</b> gesteuert. Ablauf: <b>Netztaster</b> (Bedienfeld vorne rechts) → Kamera <b>„Laptop“</b> → <b>Verbinden</b> → <b>Home</b> → Motiv wählen → <b>Rahmen</b> → <b>Start</b>. Vorher den <b>Fokus</b> am Lasermodul einstellen (Modul anklicken).'
-        })
-      )
-    );
-    // safety
-    const glassesBtn = h('button', { class: 'btn block' }, '');
-    const syncGlasses = () => (glassesBtn.textContent = this.glasses ? 'Laserschutzbrille absetzen' : 'Laserschutzbrille aufsetzen (OD 4+, 445 nm)');
-    syncGlasses();
-    glassesBtn.addEventListener('click', () => {
-      this.setGlasses(!this.glasses);
-      syncGlasses();
-    });
-    el.appendChild(h('div', { class: 'section' }, h('h4', {}, 'Sicherheit'), h('p', {}, 'Ein 10-W-Diodenlaser ist Klasse 4: Ohne Schutzbrille nie in den Laserpunkt schauen. Die Brille filtert das blaue Licht.'), glassesBtn));
-    // materials
-    this.matSec = h('div', { class: 'section' });
-    el.appendChild(this.matSec);
-    this.renderPanelParts();
-  }
-
-  renderPanelParts() {
-    if (!this.matSec) return;
-    this.matSec.innerHTML = '';
-    const grid = h('div', { class: 'swatches' });
-    for (const def of LASER_MATERIALS) {
-      const col = { plywood: '#d8b98c', mdf: '#9e7a55', cardboard: '#a58d6c', leather: '#8b5a36', acrylic: '#151515', slate: '#2c2d31', anodized: '#23377a' }[def.surface];
-      const b = h('button', { class: `swatch${this.workpiece?.def === def ? ' active' : ''}`, disabled: !!this.workpiece, title: def.name }, h('span', { class: 'chip', style: `background:${col}` }), h('span', {}, def.name), h('span', { class: 'sw-sub' }, `${def.w}×${def.h}×${def.t} mm`));
-      b.addEventListener('click', () => {
-        this.placeMaterial(def);
-        this.renderPanelParts();
-      });
-      grid.appendChild(b);
-    }
-    this.matSec.append(
-      h('h4', {}, 'Material'),
-      h('p', {}, this.workpiece ? `Auf dem Tisch: ${this.workpiece.def.name} (vorne links an X10/Y10 angelegt).` : 'Kein Werkstück aufgelegt. Wähle eines aus dem Stapel (oder klicke den Stapel links neben dem Laser an).'),
-      this.workpiece ? h('button', { class: 'btn', onclick: () => { this.takeWorkpiece(); this.renderPanelParts(); } }, 'Werkstück abnehmen') : grid,
-      this.finished.length ? h('p', {}, `${this.finished.length} fertige(s) Werkstück(e) liegen links hinter dem Laser.`) : null
-    );
-  }
-
-  refreshPanel() {
-    if (!this.kv) return;
-    const g = this.grbl;
-    const d = this.focusDelta();
-    const rows = [
-      ['Strom', g.powered ? 'EIN' : 'AUS'],
-      ['Schlüssel', this.keyOn ? 'Laser freigegeben' : 'gesperrt'],
-      ['Not-Aus', this.estopPressed ? 'GEDRÜCKT' : 'frei'],
-      ['GRBL', g.powered ? g.state : '—'],
-      ['Position', `X${this.mpos[0].toFixed(1)} Y${this.mpos[1].toFixed(1)}`],
-      ['Laser', this.laserPowerNow > 0 ? `${(this.laserPowerNow * MAX_W).toFixed(2)} W` : 'aus'],
-      ['Fokus', Math.abs(d) < 0.6 ? 'scharf ✓' : `${d > 0 ? 'zu hoch' : 'zu tief'} (${Math.abs(d).toFixed(1)} mm)`],
-      ['Software', this.laserApp.connected ? 'verbunden' : 'getrennt']
-    ];
-    this.kv.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
-    if (this.panelDirty) {
-      this.panelDirty = false;
-      this.renderPanelParts();
-    }
-  }
-
   onJobDone() {
-    this.app.toast(`<b>${this.name}</b>: Auftrag fertig!`, 'ok', 5000);
+    // GRBL itself has no buzzer – the software chimes on the laptop
+    const p = this.sfxPos(this.laptop.group);
+    this.app.audio.beep(p, 880, 0.12, 0.08, 'sine');
+    setTimeout(() => this.app.audio.beep(p, 1320, 0.18, 0.08, 'sine'), 160);
   }
 }

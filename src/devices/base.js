@@ -25,14 +25,6 @@ export class BaseDevice {
     return v;
   }
 
-  status() {
-    return { state: 'off', text: 'Aus' };
-  }
-
-  buildPanel(el) {
-    el.textContent = '';
-  }
-
   update() {}
 
   onKey() {
@@ -44,22 +36,4 @@ export class BaseDevice {
     (obj || this.root).getWorldPosition(v);
     return v;
   }
-}
-
-// Tiny DOM helper for building side panels
-export function h(tag, attrs = {}, ...children) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs || {})) {
-    if (k === 'class') el.className = v;
-    else if (k === 'style') el.style.cssText = v;
-    else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
-    else if (k === 'html') el.innerHTML = v;
-    else if (v === true) el.setAttribute(k, '');
-    else if (v !== false && v != null) el.setAttribute(k, v);
-  }
-  for (const c of children.flat()) {
-    if (c == null || c === false) continue;
-    el.appendChild(typeof c === 'string' || typeof c === 'number' ? document.createTextNode(String(c)) : c);
-  }
-  return el;
 }
