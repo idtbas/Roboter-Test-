@@ -79,7 +79,22 @@ export class Hud {
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !help.classList.contains('hidden')) this.closeHelp();
     });
-    collapse.addEventListener('click', () => this.el.panel.classList.toggle('collapsed'));
+    collapse.addEventListener('click', () => {
+      this.autoCollapsed = false;
+      this.el.panel.classList.toggle('collapsed');
+    });
+  }
+
+  setPanelCollapsed(c) {
+    if (c) {
+      if (!this.el.panel.classList.contains('collapsed')) {
+        this.autoCollapsed = true;
+        this.el.panel.classList.add('collapsed');
+      }
+    } else if (this.autoCollapsed) {
+      this.autoCollapsed = false;
+      this.el.panel.classList.remove('collapsed');
+    }
   }
 
   openHelp() {

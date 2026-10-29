@@ -130,12 +130,15 @@ class App {
     }
     d.onView?.(view);
     this.hud.onViewChanged(view);
+    // screens that need the full viewport (laptop) collapse the side panel
+    this.hud.setPanelCollapsed(!!view.fullscreen);
   }
 
   overview() {
     this.rig.flyTo(new THREE.Vector3(0, 1900, 2700), new THREE.Vector3(0, 900, -400), 1.4, { minDistance: 60, maxDistance: 6000 });
     this.currentView = null;
     this.hud.onViewChanged(null);
+    this.hud.setPanelCollapsed(false);
   }
 
   update(realDt) {
