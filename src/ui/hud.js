@@ -113,6 +113,7 @@ export class Hud {
     this.el.panelSub.textContent = d.kind;
     this.el.panelBody.innerHTML = '';
     d.buildPanel(this.el.panelBody);
+    d.refreshPanel?.();
     this.buildCamBar(d);
   }
 

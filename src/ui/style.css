@@ -423,6 +423,9 @@ label.field + label.field { margin-top: 8px; }
   .tool-label { display: none; }
 }
 @media (max-width: 760px) {
+  .device-tab { min-width: 0; padding: 6px 9px; }
+  .device-tab .dt-name { font-size: 12px; }
+  .device-tab .dt-kind { display: none; }
   #topbar { flex-wrap: wrap; top: 8px; left: 8px; right: 8px; gap: 8px; }
   .brand { display: none; }
   #device-tabs { order: 2; width: 100%; margin: 0; }

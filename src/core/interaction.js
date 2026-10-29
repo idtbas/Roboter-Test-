@@ -150,12 +150,21 @@ export class Interaction {
     if (!this.enabled) return;
     const r = this.pick(e);
     if (r && r.h.onWheel) {
-      const steps = Math.sign(e.deltaY) * Math.max(1, Math.round(Math.abs(e.deltaY) / 100));
-      const used = r.h.onWheel(steps, r.hit, e);
-      if (used !== false) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
+      // mouse wheels deliver ~100 per notch, touchpads many small deltas
+      const dy = e.deltaY * (e.deltaMode === 1 ? 33 : 1);
+      const now = performance.now();
+      if (now - (this.wheelT || 0) > 300) this.wheelAcc = 0;
+      this.wheelT = now;
+      let steps = 0;
+      if (Math.abs(dy) >= 50) steps = Math.sign(dy) * Math.max(1, Math.round(Math.abs(dy) / 100));
+      else {
+        this.wheelAcc = (this.wheelAcc || 0) + dy;
+        steps = Math.trunc(this.wheelAcc / 60);
+        this.wheelAcc -= steps * 60;
       }
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (steps) r.h.onWheel(steps, r.hit, e);
     }
   }
 

@@ -305,12 +305,30 @@ export class PrusaMK4S extends BaseDevice {
     H.rocker.rotation.x = 0.25;
 
     I.add(H.knob, {
-      tooltip: () => ({ title: 'Drehknopf', hint: 'Mausrad = drehen · Klick = drücken · (oder Pfeiltasten + Enter)' }),
-      cursor: 'pointer',
+      tooltip: () => ({ title: 'Drehknopf', hint: 'Mausrad oder Ziehen = drehen · Klick = drücken · (oder Pfeiltasten + Enter)' }),
+      cursor: 'grab',
       onWheel: (steps) => {
         this.rotateKnob(steps);
         return true;
       },
+      // drag (mouse or finger) to turn the knob
+      onDown: (hit, e) => {
+        this.knobDrag = { x: e.clientX, y: e.clientY, acc: 0 };
+        return true;
+      },
+      onDrag: (hit, e) => {
+        const d = this.knobDrag;
+        if (!d) return;
+        d.acc += e.clientX - d.x - (e.clientY - d.y);
+        d.x = e.clientX;
+        d.y = e.clientY;
+        while (Math.abs(d.acc) >= 22) {
+          const s = Math.sign(d.acc);
+          this.rotateKnob(s);
+          d.acc -= s * 22;
+        }
+      },
+      onUp: () => (this.knobDrag = null),
       onClick: () => this.pressKnob()
     });
 

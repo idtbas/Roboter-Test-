@@ -83,7 +83,7 @@ function gear() {
   hh.absarc(0, 0, 4.1, 0, Math.PI * 2, true);
   hubS.holes.push(hh);
   const hub = new THREE.ExtrudeGeometry(hubS, { depth: 10, bevelEnabled: false, curveSegments: 32 });
-  const g = mergeGeometries([plate.toNonIndexed(), hub.toNonIndexed()]);
+  const g = mergeGeometries([plate, hub].map((x) => (x.index ? x.toNonIndexed() : x)));
   g.rotateX(-Math.PI / 2);
   return g;
 }

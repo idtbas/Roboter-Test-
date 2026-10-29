@@ -71,6 +71,17 @@ class App {
     this.engine.onUpdate((dt) => this.update(dt));
     this.engine.start();
 
+    // Devices keep working while the tab is in the background: browsers pause
+    // rendering, so the missed time is simulated when the page becomes visible.
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.hiddenAt = performance.now();
+      else if (this.hiddenAt) {
+        const away = (performance.now() - this.hiddenAt) / 1000;
+        this.hiddenAt = null;
+        if (away > 2) this.catchUp(away * this.simSpeed);
+      }
+    });
+
     // first user gesture unlocks audio
     const unlock = () => {
       this.audio.unlock();
@@ -119,8 +130,14 @@ class App {
   }
 
   flyToView(d, view) {
-    const pos = typeof view.pos === 'function' ? view.pos() : view.pos;
+    let pos = typeof view.pos === 'function' ? view.pos() : view.pos;
     const target = typeof view.target === 'function' ? view.target() : view.target;
+    // narrow (portrait) screens: step back so the device still fits
+    const aspect = this.engine.camera.aspect;
+    if (!view.fullscreen && aspect < 1.35) {
+      const k = Math.min(2.4, Math.pow(1.35 / aspect, 0.85));
+      pos = target.clone().add(pos.clone().sub(target).multiplyScalar(k));
+    }
     this.rig.flyTo(pos, target, view.duration || 1.3, { minDistance: view.minDistance ?? 60, maxDistance: view.maxDistance ?? 4200 });
     this.currentView = view;
     if (view.follow) {
@@ -141,7 +158,22 @@ class App {
     this.hud.setPanelCollapsed(false);
   }
 
+  catchUp(seconds) {
+    const busy = this.devices.some((d) => d.status().state === 'busy');
+    this.catchUpLeft = Math.min(seconds, 24 * 3600);
+    if (busy && seconds > 20) this.toast(`Willkommen zurück! Die Geräte haben weitergearbeitet – ${Math.round(seconds / 60)} min werden nachgeholt …`, 'info', 4000);
+  }
+
   update(realDt) {
+    if (this.catchUpLeft > 0) {
+      // fast-forward in small slices without blocking the UI for long
+      const t0 = performance.now();
+      while (this.catchUpLeft > 0 && performance.now() - t0 < 25) {
+        const step = Math.min(this.catchUpLeft, 1);
+        for (const d of this.devices) d.update(step, 0);
+        this.catchUpLeft -= step;
+      }
+    }
     const simDt = realDt * this.simSpeed;
     this.simTime += simDt;
     for (const d of this.devices) d.update(simDt, realDt);

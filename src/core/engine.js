@@ -62,7 +62,7 @@ export class Engine {
     this.setupComposer();
 
     this.updaters = [];
-    this.clock = new THREE.Clock();
+    this.timer = new THREE.Timer();
     this.frame = 0;
 
     window.addEventListener('resize', () => this.resize());
@@ -95,6 +95,21 @@ export class Engine {
     });
     this.gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 12 });
     this.gtao.enabled = this.quality === 'high';
+    // keep transparent / clipped / sprite objects out of the AO normal+depth pass
+    this.gtao._overrideVisibility = function () {
+      const cache = this._visibilityCache;
+      this.scene.traverse((o) => {
+        if (!o.visible) return;
+        const m = o.material;
+        const skip =
+          o.isPoints || o.isLine || o.isLine2 || o.isSprite || o.userData.noAO ||
+          (m && !Array.isArray(m) && (m.transparent || (m.clippingPlanes && m.clippingPlanes.length)));
+        if (skip) {
+          o.visible = false;
+          cache.push(o);
+        }
+      });
+    };
     this.composer.addPass(this.gtao);
 
     this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.35, 0.5, 1.05);
@@ -155,7 +170,8 @@ export class Engine {
   start() {
     const loop = () => {
       this.raf = requestAnimationFrame(loop);
-      const dt = Math.min(this.clock.getDelta(), 0.1);
+      this.timer.update();
+      const dt = Math.min(this.timer.getDelta(), 0.1);
       if (this.paused) return;
       this.step(dt);
     };
