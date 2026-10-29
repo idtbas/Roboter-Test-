@@ -1,0 +1,20 @@
+{
+  "name": "maker-werkstatt-3d",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Realistischer 3D-Werkstatt-Simulator: 3D-Drucker, Laser-Gravierer und Resin-Drucker im Browser",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "clipper-lib": "^6.4.2",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "vite": "^8.3.5"
+  }
+}
