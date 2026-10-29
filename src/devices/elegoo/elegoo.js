@@ -323,7 +323,7 @@ export class ElegooMars4 extends BaseDevice {
     this.view('overview', 'Übersicht', [240, 520, 720], [0, 230, 0]);
     this.view('touch', 'Touchscreen', [-62, 120, 330], [-62, 70, 110], { minDistance: 80 });
     this.view('vat', 'Wanne & Plattform', [210, 330, 400], [0, 200, 20]);
-    this.view('back', 'Rückseite', [260, 200, -420], [60, 80, -100]);
+    this.view('back', 'Rückseite', [340, 230, -270], [80, 50, -110]);
     this.updateMechanics();
   }
 

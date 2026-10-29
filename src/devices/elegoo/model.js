@@ -65,7 +65,7 @@ export function buildMarsModel(M) {
   // touchscreen (front left)
   const tsGroup = group('touch', { x: -62, y: 66, z: 115.2 });
   tsGroup.add(rbox(86, 60, 2, 3, M.plasticGlossBlack, { z: -0.6 }));
-  const touchMat = new THREE.MeshStandardMaterial({ color: 0x030303, emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.45, envMapIntensity: 0.15 });
+  const touchMat = new THREE.MeshLambertMaterial({ color: 0x030303, emissive: 0xffffff, emissiveIntensity: 0 });
   const touch = new THREE.Mesh(new THREE.PlaneGeometry(74, 49.3), touchMat);
   touch.position.z = 0.55;
   touch.userData.keep = true;

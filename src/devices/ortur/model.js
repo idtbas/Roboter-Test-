@@ -278,7 +278,7 @@ export function buildOrturModel(M) {
 
   // spot glow sprite + light
   const spotTex = glowTexture();
-  const spotMat = new THREE.SpriteMaterial({ map: spotTex, color: 0x8a7dff, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, depthTest: true });
+  const spotMat = new THREE.SpriteMaterial({ map: spotTex, color: new THREE.Color(0x8a7dff).multiplyScalar(3), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, depthTest: true });
   const spot = new THREE.Sprite(spotMat);
   spot.scale.set(10, 10, 1);
   spot.visible = false;
@@ -286,7 +286,7 @@ export function buildOrturModel(M) {
   root.add(spot);
   H.spot = spot;
   H.spotMat = spotMat;
-  const core = new THREE.Sprite(new THREE.SpriteMaterial({ map: spotTex, color: 0xffffff, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false }));
+  const core = new THREE.Sprite(new THREE.SpriteMaterial({ map: spotTex, color: new THREE.Color(0xe8e4ff).multiplyScalar(5), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false }));
   core.scale.set(2.5, 2.5, 1);
   core.visible = false;
   root.add(core);
@@ -351,7 +351,7 @@ export function buildLaptop(M) {
   const lidBody = rbox(W, 210, 6, 6, alu, { y: 105, z: -3 });
   lid.add(lidBody);
   lid.add(rbox(W - 10, 200, 0.6, 5, M.plasticGlossBlack, { y: 105, z: 0.2 }));
-  const screenMat = new THREE.MeshStandardMaterial({ color: 0x020202, emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.6, envMapIntensity: 0.08 });
+  const screenMat = new THREE.MeshLambertMaterial({ color: 0x030303, emissive: 0xffffff, emissiveIntensity: 0 });
   const screen = new THREE.Mesh(new THREE.PlaneGeometry(296, 185), screenMat);
   screen.position.set(0, 108, 0.6);
   screen.userData.keep = true;

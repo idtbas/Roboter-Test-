@@ -112,7 +112,7 @@ export class Engine {
     };
     this.composer.addPass(this.gtao);
 
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.35, 0.5, 1.05);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.45, 0.5, 1.5);
     this.bloom.enabled = this.quality !== 'low';
     this.composer.addPass(this.bloom);
 

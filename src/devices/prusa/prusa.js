@@ -75,7 +75,7 @@ export class PrusaMK4S extends BaseDevice {
       follow: () => this.H.nozzleTip.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, 30, 0))
     });
     this.view('bed', 'Druckbett', [40, 420, 420], [0, 80, 40]);
-    this.view('back', 'Rückseite', [520, 420, -620], [80, 160, -80]);
+    this.view('back', 'Netzteil (hinten)', [560, 330, -300], [170, 110, -130]);
 
     this.updateMechanics(true);
     this.loadSamples();
@@ -343,6 +343,8 @@ export class PrusaMK4S extends BaseDevice {
     });
 
     I.add(H.screen, {
+      noHighlight: true,
+      cursor: 'default',
       tooltip: () => (fw.powered ? { title: 'xLCD-Display (3,5″)', hint: 'Kein Touchscreen – bedienen über den Drehknopf rechts daneben' } : { title: 'Display (aus)', hint: 'Drucker am Netzschalter hinten rechts einschalten' })
     });
 
@@ -690,7 +692,7 @@ export class PrusaMK4S extends BaseDevice {
         { class: 'section' },
         h('div', {
           class: 'hint',
-          html: 'Einschalten: <b>Netzschalter</b> hinten rechts am Netzteil (Kamera „Rückseite“). Bedienen nur über das <b>Display mit Drehknopf</b> vorne links. Druckdateien liegen auf dem <b>USB-Stick</b> am Display.'
+          html: 'Einschalten: <b>Netzschalter</b> hinten rechts am Netzteil (Kamera „Netzteil (hinten)“). Bedienen nur über das <b>Display mit Drehknopf</b> vorne links. Druckdateien liegen auf dem <b>USB-Stick</b> am Display.'
         })
       )
     );

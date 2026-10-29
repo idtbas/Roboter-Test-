@@ -159,6 +159,7 @@ export function buildPrusaModel(M) {
   swGroup.add(rocker);
   rocker.userData.keep = true;
   swGroup.userData.keep = true;
+  frame.add(swGroup);
   H.powerSwitch = swGroup;
   H.rocker = rocker;
 
@@ -193,13 +194,10 @@ export function buildPrusaModel(M) {
   // the actual screen (texture provided by firmware UI)
   const screenGeo = new THREE.PlaneGeometry(76.8, 51.2);
   // matte anti-glare TFT surface
-  const screenMat = new THREE.MeshStandardMaterial({
-    color: 0x030303,
+  const screenMat = new THREE.MeshLambertMaterial({
+    color: 0x050505,
     emissive: 0xffffff,
-    emissiveIntensity: 0.9,
-    roughness: 0.55,
-    metalness: 0,
-    envMapIntensity: 0.2
+    emissiveIntensity: 0.9
   });
   const screen = new THREE.Mesh(screenGeo, screenMat);
   screen.position.set(-30, 1, 10.6);
